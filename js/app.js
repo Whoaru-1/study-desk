@@ -134,6 +134,18 @@
     return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]';
   }
 
+  /* 需要先提取正文才能分析的文件类型 */
+  const EXTRACT_TYPES = ['pdf', 'docx', 'pptx'];
+
+  async function apiExtract(rel) {
+    if (!rel) return null;
+    try {
+      const r = await fetch('/api/extract?rel=' + encodeURIComponent(rel), { cache: 'no-store' });
+      const d = await r.json();
+      return d || null;
+    } catch (e) { return null; }
+  }
+
   async function probeLocal() {
     /* 非本机地址（GitHub Pages / file://）直接跳过，避免多余的 404 请求 */
     if (!isLocalOrigin()) {
@@ -381,6 +393,10 @@
       }
     }
     const tagLine = buildDocTags(d, opt);
+    /* 摘要直接落在资料卡上：导入后即刻可见，不用点进详情 */
+    const summary = ins && !ins.needsText && ins.tldr
+      ? '<span class="doc-sum">' + esc(ins.tldr) + '</span>'
+      : '';
 
     return '<button class="doc" data-act="doc" data-id="' + d.id + '"' +
       (d.tags && d.tags.length ? ' title="标签：' + esc(d.tags.join('、')) + '"' : '') + '>' +
@@ -391,6 +407,7 @@
         '<span class="doc-meta"><span>' + meta.label + '</span><i></i><span>' + fmtDate(d.updatedAt) + '</span>' +
         (ins ? '<i></i><span>重要度 ' + ins.importance + '</span>' : '') +
         '</span>' +
+        summary +
         snippet +
         tagLine +
       '</span>' +
@@ -1294,6 +1311,7 @@
 
   function openSheet(parts, opts) {
     clearTimeout(sheetCloseTimer);
+    pickerApi = null;
     const root = $('#sheetRoot');
     root.innerHTML =
       '<div class="sheet-backdrop" data-act="close-sheet"></div>' +
@@ -1362,6 +1380,155 @@
     }, 240);
   }
 
+  /* ---------------- 资料详情：标签选择器 ---------------- */
+  let pickerApi = null;
+
+  function docTagChipsHtml(d) {
+    if (!d || !d.tags || !d.tags.length) return '<span class="muted" style="font-size:12px">还没有标签</span>';
+    return d.tags.map(function (t) {
+      const c = tagColor(t);
+      return '<span class="chip tg-chip" style="background:' + hexA(c, 0.11) + ';color:' + shade(c, 0.14) + '">' +
+        '<i class="tg-dot" style="background:' + c + '"></i>' + esc(t) +
+        '<button data-act="tag-remove" data-id="' + d.id + '" data-tag="' + esc(t) + '" aria-label="移除标签" style="color:' + shade(c, 0.14) + '">×</button></span>';
+    }).join('');
+  }
+
+  function tagUsageMap() {
+    const map = {};
+    state.docs.forEach(function (d) {
+      (d.tags || []).forEach(function (t) { map[t] = (map[t] || 0) + 1; });
+    });
+    return map;
+  }
+
+  /* 选择器列表：已用标签按使用量排序，输入时实时过滤，并给出「创建」项 */
+  function tagPickerHtml(d, rawQuery) {
+    if (!d) return '';
+    const inputName = cleanTagName(rawQuery);
+    const q = inputName.toLowerCase();
+    const own = d.tags || [];
+    const uses = tagUsageMap();
+    const list = tagList().slice().sort(function (a, b) {
+      return (uses[b.name] || 0) - (uses[a.name] || 0) || a.name.localeCompare(b.name, 'zh-Hans-CN');
+    });
+    const avail = list.filter(function (t) {
+      return own.indexOf(t.name) < 0 && (!q || t.name.toLowerCase().indexOf(q) >= 0);
+    });
+
+    let html = '<div class="tp-head"><span>已有标签</span><span>' + list.length + '</span></div>';
+
+    if (avail.length) {
+      html += avail.slice(0, 40).map(function (t) {
+        return '<button type="button" class="tp-item" data-act="tag-pick" data-id="' + d.id + '" data-tag="' + esc(t.name) + '">' +
+          '<i class="tg-dot" style="background:' + t.color + '"></i>' +
+          '<span class="tp-name">' + esc(t.name) + '</span>' +
+          '<span class="tp-use">' + (uses[t.name] || 0) + ' 篇</span></button>';
+      }).join('');
+    } else if (!list.length) {
+      html += '<div class="tp-empty">还没有标签，输入名称回车即可创建</div>';
+    } else if (!q) {
+      html += '<div class="tp-empty">所有标签都加在这份资料上了</div>';
+    }
+
+    const exist = list.filter(function (t) { return t.name === inputName; })[0];
+    if (inputName && !exist) {
+      html += '<button type="button" class="tp-item tp-create" data-act="tag-pick" data-id="' + d.id + '" data-tag="' + esc(inputName) + '">' +
+        '<span class="tp-plus">＋</span>' +
+        '<span class="tp-name">创建「' + esc(inputName) + '」</span>' +
+        '<i class="tg-dot" style="background:' + pickTagColor() + '"></i></button>';
+    }
+    return html;
+  }
+
+  function movePickerActive(panel, step) {
+    const items = Array.prototype.slice.call(panel.querySelectorAll('.tp-item'));
+    if (!items.length) return;
+    let i = -1;
+    items.forEach(function (el, k) { if (el.classList.contains('active')) i = k; });
+    i = i < 0 ? (step > 0 ? 0 : items.length - 1) : (i + step + items.length) % items.length;
+    items.forEach(function (el) { el.classList.remove('active'); });
+    items[i].classList.add('active');
+    if (items[i].scrollIntoView) items[i].scrollIntoView({ block: 'nearest' });
+  }
+
+  function mountTagPicker(root, docId) {
+    const input = $('#tagAddInput', root);
+    const panel = $('#tagPicker', root);
+    const field = $('#tagField', root);
+    if (!input || !panel) return;
+
+    const open = function () {
+      const d = docById(docId);
+      if (!d) return;
+      panel.hidden = false;
+      panel.innerHTML = tagPickerHtml(d, input.value);
+      input.setAttribute('aria-expanded', 'true');
+      if (field) field.classList.add('picking');
+      /* 列表超出可视区域时把面板推上来，避免被面板底部裁掉 */
+      const body = panel.closest('.sheet-body');
+      if (body) {
+        requestAnimationFrame(function () {
+          const pr = panel.getBoundingClientRect();
+          const br = body.getBoundingClientRect();
+          if (pr.bottom > br.bottom - 6) body.scrollTop += pr.bottom - br.bottom + 14;
+        });
+      }
+    };
+    const close = function () {
+      panel.hidden = true;
+      panel.innerHTML = '';
+      input.setAttribute('aria-expanded', 'false');
+      if (field) field.classList.remove('picking');
+    };
+
+    pickerApi = { open: open, close: close, toggle: function () { if (panel.hidden) open(); else close(); } };
+
+    input.addEventListener('focus', open);
+    input.addEventListener('click', open);
+    input.addEventListener('input', function () {
+      if (panel.hidden) open();
+      else panel.innerHTML = tagPickerHtml(docById(docId), input.value);
+    });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { close(); input.blur(); return; }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (panel.hidden) open();
+        movePickerActive(panel, e.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const active = panel.querySelector('.tp-item.active');
+      if (active) { active.click(); return; }
+      const name = cleanTagName(input.value);
+      if (!name) return;
+      if (addTag(docId, name)) { input.value = ''; open(); }
+    });
+    /* 点选列表时保持输入框焦点，避免先 blur 再 click 丢失事件 */
+    panel.addEventListener('mousedown', function (e) {
+      if (e.target.closest('.tp-item')) e.preventDefault();
+    });
+    input.addEventListener('blur', function () {
+      setTimeout(function () {
+        if (!panel.contains(document.activeElement)) close();
+      }, 140);
+    });
+  }
+
+  /* 标签增删后就地刷新胶囊与列表，避免整块面板重绘丢失滚动位置 */
+  function refreshDocTags(id) {
+    const root = $('#sheetRoot');
+    if (!root || !root.classList.contains('open')) return;
+    const d = docById(id);
+    if (!d) return;
+    const chips = $('#docTagChips', root);
+    if (chips) chips.innerHTML = docTagChipsHtml(d);
+    const panel = $('#tagPicker', root);
+    const input = $('#tagAddInput', root);
+    if (panel && input && !panel.hidden) panel.innerHTML = tagPickerHtml(d, input.value);
+  }
+
   function openDoc(id, opts) {
     opts = opts || {};
     const d = docById(id);
@@ -1376,38 +1543,48 @@
       .map((e) => ({ d: docById(e.source === id ? e.target : e.source), w: e.weight, shared: e.shared }))
       .filter((x) => x.d);
 
-    const allTags = a.topics.filter((t) => t.name !== '未归类').map((t) => t.name);
+    const canExtract = !!(d.fileRel && state.localMode && EXTRACT_TYPES.indexOf(d.type) >= 0);
+    const missingText = !!ins.needsText;
 
-    const body =
-      '<div class="kv">' +
-        '<div><span>类型</span><b>' + meta.label + ' · ' + fmtSize(d.size) + '</b></div>' +
-        '<div><span>重要度</span><b>' + ins.importance + ' / 100</b></div>' +
-        '<div><span>最近复习</span><b>' + fmtDate(d.lastReviewed) + '</b></div>' +
-        '<div><span>备份状态</span><b>' + st.label + (d.backup && d.backup.at ? ' · ' + fmtDate(d.backup.at) : '') + '</b></div>' +
+    const summaryHtml =
+      '<div class="sheet-section-title" style="justify-content:space-between;gap:10px">智能摘要' +
+        (canExtract
+          ? '<button class="link-btn" data-act="reextract" data-id="' + d.id + '">' +
+            (missingText ? '提取正文' : '重新提取正文') + '</button>'
+          : '') +
       '</div>' +
+      (missingText
+        ? '<div class="sum-empty">' +
+            '<b>还没有可分析的正文</b>' +
+            '<p>' + (canExtract
+              ? '原件已存入资料文件夹，点上面的「提取正文」，解析出的文字会自动生成摘要与关键词。'
+              : 'PDF / Word / PPT 需要本地解析：用 npm start 打开工作台后，再回来提取。') + '</p>' +
+          '</div>'
+        : '<p class="sum-tldr" style="margin:0 0 8px">' + esc(ins.tldr) + '</p>' +
+          (ins.points.length ? '<ul class="points">' + ins.points.map((p) => '<li>' + esc(p) + '</li>').join('') + '</ul>' : '') +
+          '<div class="sum-src">正文 ' + Number(ins.charCount || 0).toLocaleString() + ' 字' +
+            (d.pages ? ' · ' + d.pages + ' 页' : '') +
+            (d.extractedAt ? ' · 导入时已解析' : '') + '</div>');
 
-      '<div class="sheet-section-title">智能摘要</div>' +
-      '<p class="sum-tldr" style="margin:0 0 8px">' + esc(ins.tldr) + '</p>' +
-      '<ul class="points">' + ins.points.map((p) => '<li>' + esc(p) + '</li>').join('') + '</ul>' +
+    const keywordHtml = ins.keywords.length
+      ? '<div class="sheet-section-title">关键词</div>' +
+        '<div class="kw-cloud">' + ins.keywords.map((k) => '<span class="kw hot">' + esc(k) + '</span>').join('') + '</div>'
+      : '';
 
-      '<div class="sheet-section-title">关键词</div>' +
-      '<div class="kw-cloud">' + ins.keywords.map((k) => '<span class="kw hot">' + esc(k) + '</span>').join('') + '</div>' +
-
-      '<div class="sheet-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:10px">标签' +
+    const tagHtml =
+      '<div class="sheet-section-title" style="justify-content:space-between;gap:10px">标签' +
         '<button class="link-btn" data-act="tag-manager">管理全部标签</button></div>' +
-      '<div class="chips-edit">' +
-        (d.tags && d.tags.length ? d.tags.map((t) => {
-          const c = tagColor(t);
-          return '<span class="chip tg-chip" style="background:' + hexA(c, 0.11) + ';color:' + shade(c, 0.14) + '">' +
-            '<i class="tg-dot" style="background:' + c + '"></i>' + esc(t) +
-            '<button data-act="tag-remove" data-id="' + d.id + '" data-tag="' + esc(t) + '" aria-label="移除标签" style="color:' + shade(c, 0.14) + '">×</button></span>';
-        }).join('')
-          : '<span class="muted" style="font-size:12px">还没有标签</span>') +
-      '</div>' +
+      '<div class="chips-edit" id="docTagChips">' + docTagChipsHtml(d) + '</div>' +
       '<div class="tag-add-row">' +
-        '<input class="input" id="tagAddInput" data-id="' + d.id + '" placeholder="输入新标签或选择已有标签" list="tagOptions">' +
-        '<datalist id="tagOptions">' + allTags.map((t) => '<option value="' + esc(t) + '">').join('') + '</datalist>' +
-        '<div class="hint">回车添加；不存在的标签会自动创建并分配颜色</div>' +
+        '<div class="tag-field" id="tagField">' +
+          '<input class="input" id="tagAddInput" data-id="' + d.id + '" placeholder="输入或点击选择已有标签"' +
+            ' autocomplete="off" role="combobox" aria-expanded="false" aria-controls="tagPicker" aria-autocomplete="list">' +
+          '<button type="button" class="tag-picker-btn" data-act="tag-toggle" data-id="' + d.id + '" aria-label="选择已有标签" tabindex="-1">' +
+            '<svg viewBox="0 0 24 24" fill="none"><path d="m7 10 5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+          '</button>' +
+        '</div>' +
+        '<div class="tag-picker" id="tagPicker" role="listbox" hidden></div>' +
+        '<div class="hint" id="tagHint">点开可选已有标签；输入新名称回车会自动创建并分配颜色</div>' +
       '</div>' +
 
       (rel.length ? '<div class="sheet-section-title">关联资料</div><div class="rel-list">' +
@@ -1429,7 +1606,17 @@
         '</div>' : '') +
 
       '<div class="sheet-section-title">原始文档</div>' +
-      '<div class="original" id="originalText">' + Engine.highlight(d.content || '（暂无正文，可在导入时粘贴内容）', ins.keywords) + '</div>';
+      '<div class="original" id="originalText">' +
+        (d.content ? Engine.highlight(d.content, ins.keywords) : '（暂无正文）') + '</div>';
+
+    const body =
+      '<div class="kv">' +
+        '<div><span>类型</span><b>' + meta.label + ' · ' + fmtSize(d.size) + '</b></div>' +
+        '<div><span>重要度</span><b>' + ins.importance + ' / 100</b></div>' +
+        '<div><span>最近复习</span><b>' + fmtDate(d.lastReviewed) + '</b></div>' +
+        '<div><span>备份状态</span><b>' + st.label + (d.backup && d.backup.at ? ' · ' + fmtDate(d.backup.at) : '') + '</b></div>' +
+      '</div>' +
+      summaryHtml + keywordHtml + tagHtml;
 
     openSheet({
       eyebrow: '资料详情',
@@ -1447,21 +1634,16 @@
         '</div>'
     }, {
       mount: function (root) {
-        const input = $('#tagAddInput', root);
-        if (input) {
-          input.addEventListener('keydown', function (e) {
-            if (e.key !== 'Enter') return;
-            const v = input.value.trim().replace(/[,，\s]+/g, '');
-            if (!v) return;
-            addTag(d.id, v);
-            openDoc(d.id);
-            const again = $('#tagAddInput');
-            if (again) again.focus();
-          });
-        }
+        mountTagPicker(root, d.id);
         if (opts.original) {
           const el = $('#originalText', root);
           if (el) setTimeout(() => el.scrollIntoView({ block: 'center', behavior: 'smooth' }), 240);
+        }
+        /* 老资料首次打开时自动补解析一次，省得逐篇点按钮 */
+        if (canExtract && missingText && !d.extractTried) {
+          d.extractTried = true;
+          save();
+          setTimeout(function () { reextractDoc(d.id, true); }, 420);
         }
       }
     });
@@ -1668,7 +1850,10 @@
       lastReviewed: null,
       backup: { state: 'local', at: null },
       fileRel: data.fileRel || null,
-      fileName: data.fileName || null
+      fileName: data.fileName || null,
+      pages: data.pages || 0,
+      needsText: !!data.needsText,
+      extractedAt: data.extractedAt || null
     };
     doc.tags.forEach(function (name) { ensureTag(name); });
     state.docs.unshift(doc);
@@ -1678,18 +1863,20 @@
 
   function addTag(id, tag) {
     const d = docById(id);
-    if (!d) return;
+    if (!d) return false;
     const name = cleanTagName(tag);
-    if (!name) return;
+    if (!name) return false;
     d.tags = d.tags || [];
-    if (d.tags.indexOf(name) >= 0) { toast('这份资料已经有「' + name + '」'); return; }
-    if (d.tags.length >= 8) { toast('单份资料最多 8 个标签'); return; }
+    if (d.tags.indexOf(name) >= 0) { toast('这份资料已经有「' + name + '」'); return false; }
+    if (d.tags.length >= 8) { toast('单份资料最多 8 个标签'); return false; }
     ensureTag(name);
     d.tags.push(name);
     d.updatedAt = new Date().toISOString();
     recompute();
     render();
+    refreshDocTags(id);
     toast('已添加标签「' + name + '」', 'check');
+    return true;
   }
 
   function removeTag(id, tag) {
@@ -1699,7 +1886,7 @@
     d.updatedAt = new Date().toISOString();
     recompute();
     render();
-    openDoc(id);
+    refreshDocTags(id);
     toast('已移除标签「' + tag + '」');
   }
 
@@ -1808,7 +1995,9 @@
     closeSheet();
 
     const typeMap = { pdf: 'pdf', md: 'md', markdown: 'md', docx: 'docx', doc: 'docx', pptx: 'pptx', ppt: 'pptx', txt: 'note', json: 'note', csv: 'note', html: 'url', htm: 'url' };
-    let stored = 0;
+    let stored = 0, parsed = 0, pending = 0;
+
+    toast('正在导入 ' + list.length + ' 份资料…');
 
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
@@ -1819,7 +2008,6 @@
       /* 本地模式：先落盘到访达可见的仓库，之后才能「在访达中显示」 */
       let saved = null;
       if (state.localMode) {
-        toast('正在写入资料文件夹…');
         try {
           const res = await apiUpload(f);
           if (res && res.ok && res.file) { saved = res.file; stored += 1; }
@@ -1828,9 +2016,30 @@
         }
       }
 
-      const content = TEXT_EXT.indexOf(ext) >= 0
-        ? (await readTextFile(f, ext)).slice(0, 20000)
-        : '（' + (window.TYPE_META[type] || {}).label + ' 文件，已记录元信息。可在资料详情中补充正文后重新分析。）';
+      let content = '';
+      let needsText = false;
+      let pages = 0;
+      let extractedAt = null;
+
+      if (TEXT_EXT.indexOf(ext) >= 0) {
+        content = (await readTextFile(f, ext)).slice(0, 20000);
+        if (!content.trim()) needsText = true;
+      } else if (EXTRACT_TYPES.indexOf(type) >= 0 && saved) {
+        /* 上传即解析：摘要、关键词、主题在导入这一步就生成 */
+        const ex = await apiExtract(saved.rel);
+        if (ex && ex.ok && ex.text) {
+          content = ex.text.slice(0, 20000);
+          pages = ex.pages || 0;
+          extractedAt = new Date().toISOString();
+          parsed += 1;
+        } else {
+          needsText = true;
+          pending += 1;
+        }
+      } else {
+        needsText = true;
+        pending += 1;
+      }
 
       addDoc({
         title: title,
@@ -1839,7 +2048,10 @@
         size: f.size,
         tags: [],
         fileRel: saved ? saved.rel : null,
-        fileName: saved ? saved.name : null
+        fileName: saved ? saved.name : null,
+        pages: pages,
+        needsText: needsText,
+        extractedAt: extractedAt
       });
     }
 
@@ -1849,7 +2061,38 @@
     }
     save();
     render();
-    toast('已导入 ' + list.length + ' 份资料' + (stored ? ' · ' + stored + ' 份原件已入库' : ''), 'check');
+
+    const bits = ['已导入 ' + list.length + ' 份资料'];
+    if (parsed) bits.push(parsed + ' 份已生成摘要');
+    if (stored) bits.push(stored + ' 份原件已入库');
+    if (pending) bits.push(state.localMode ? pending + ' 份待提取正文' : pending + ' 份需本地运行才能解析');
+    toast(bits.join(' · '), 'check');
+  }
+
+  /* 重新从原件提取正文：导入时没解析成功、或想更新摘要时手动触发 */
+  async function reextractDoc(id, silent) {
+    const d = docById(id);
+    if (!d) return;
+    if (!d.fileRel) { if (!silent) toast('这份资料没有关联的本机文件'); return; }
+    if (!state.localMode) { if (!silent) toast('需要在本地运行（npm start）才能解析原件'); return; }
+    if (!silent) toast('正在解析「' + shortTitle(d.title) + '」的正文…');
+
+    const r = await apiExtract(d.fileRel);
+    if (r && r.ok && r.text) {
+      d.content = r.text.slice(0, 20000);
+      d.needsText = false;
+      d.pages = r.pages || d.pages || 0;
+      d.extractedAt = new Date().toISOString();
+      d.extractTried = true;
+      recompute();
+      save();
+      render();
+      if ($('#sheetRoot').classList.contains('open')) openDoc(id);
+      toast('已解析 ' + Number(r.chars || d.content.length).toLocaleString() + ' 字' +
+        (r.pages ? ' · ' + r.pages + ' 页' : '') + '，摘要已更新', 'check');
+    } else if (!silent) {
+      toast('没能提取正文：' + ((r && r.error) || '本地服务未响应'));
+    }
   }
 
   async function backupOne(id) {
@@ -1975,6 +2218,7 @@
   }
 
   document.addEventListener('click', async function (e) {
+    if (pickerApi && !e.target.closest('.tag-add-row')) pickerApi.close();
     const btn = e.target.closest('[data-act]');
     if (!btn) {
       const nav = e.target.closest('[data-view]');
@@ -2016,6 +2260,18 @@
         $('#scrollArea').scrollTop = 0;
         save(); render(); break;
       case 'tag-new': openTagSheet(); break;
+      case 'tag-toggle': if (pickerApi) pickerApi.toggle(); break;
+      case 'tag-pick': {
+        const id = btn.getAttribute('data-id');
+        const name = btn.getAttribute('data-tag');
+        const input = $('#tagAddInput');
+        if (addTag(id, name)) {
+          if (input) { input.value = ''; input.focus(); }
+          if (pickerApi) pickerApi.open();
+        }
+        break;
+      }
+      case 'reextract': reextractDoc(btn.getAttribute('data-id')); break;
       case 'tag-edit': openTagSheet(btn.getAttribute('data-id')); break;
       case 'tag-save': {
         const nameEl = $('#tagNameInput');

@@ -1091,3 +1091,74 @@ button.tag:active{ transform: scale(.96); }
   .tag-table{ padding: 4px 4px; }
   .tag-row-side{ gap:6px; }
 }
+
+/* ============ 资料详情：摘要与正文状态 ============ */
+.doc-sum{
+  display:block; margin-top:3px;
+  font-size:11.5px; line-height:1.55; color: var(--label-2);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.sum-src{
+  margin-top:9px; font-size:10.5px; color: var(--label-3);
+  font-variant-numeric: tabular-nums;
+}
+.sum-empty{
+  padding: 13px 14px; border-radius: 12px;
+  background: rgba(120,120,128,.07);
+  border: .5px dashed rgba(120,120,128,.26);
+}
+.sum-empty b{ display:block; font-size:12.5px; font-weight:620; color: var(--label); }
+.sum-empty p{ margin:5px 0 0; font-size:11.5px; line-height:1.65; color: var(--label-2); }
+
+/* ============ 资料详情：标签选择器 ============ */
+.tag-add-row{ position:relative; }
+.tag-field{ position:relative; }
+.tag-field .input{ padding-right:34px; }
+.tag-picker-btn{
+  position:absolute; right:3px; top:50%; transform: translateY(-50%);
+  width:28px; height:28px; border-radius:8px;
+  display:grid; place-items:center; color: var(--label-3);
+  transition: color .18s, background .18s;
+}
+.tag-picker-btn:hover{ color: var(--label); background: rgba(120,120,128,.14); }
+.tag-picker-btn svg{ width:14px; height:14px; transition: transform .26s var(--spring); }
+.tag-field.picking .tag-picker-btn{ color: var(--blue); }
+.tag-field.picking .tag-picker-btn svg{ transform: rotate(180deg); }
+
+.tag-picker{
+  margin-top:6px; padding:4px;
+  max-height: 208px; overflow-y:auto; overscroll-behavior: contain;
+  background: var(--elev); border-radius: 13px;
+  border: .5px solid var(--sep-strong);
+  box-shadow: 0 12px 30px -14px rgba(16,18,27,.26);
+  animation: pickerIn .24s var(--spring) both;
+}
+@keyframes pickerIn{ from{ opacity:0; transform: translateY(-5px) scale(.985);} to{ opacity:1; transform:none;} }
+.tp-head{
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 6px 8px 5px;
+  font-size:10px; font-weight:650; letter-spacing:.05em; text-transform:uppercase;
+  color: var(--label-3);
+}
+.tp-item{
+  display:flex; align-items:center; gap:8px; width:100%;
+  padding: 7px 8px; border-radius:9px; text-align:left;
+  font-size:12.5px; color: var(--label);
+  transition: background .16s var(--ease);
+}
+.tp-item:hover, .tp-item.active{ background: var(--bg-soft); }
+.tp-item.active{ box-shadow: inset 0 0 0 1px rgba(10,132,255,.24); }
+.tp-name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tp-use{ font-size:10.5px; color: var(--label-3); font-variant-numeric: tabular-nums; }
+.tp-empty{ padding: 12px 10px; font-size:11.5px; color: var(--label-3); text-align:center; }
+.tp-create .tp-plus{
+  width:16px; height:16px; flex:0 0 16px; border-radius:99px;
+  display:grid; place-items:center; font-size:12px; line-height:1;
+  background: rgba(10,132,255,.12); color: var(--blue);
+}
+.tp-create .tp-name{ color: var(--blue); font-weight:560; }
+
+@media (max-width: 560px){
+  .tag-picker{ max-height: 180px; }
+  .doc-sum{ font-size:11px; }
+}

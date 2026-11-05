@@ -142,9 +142,19 @@ window.Engine = (function () {
     });
 
     const ranked = scored.slice().sort((a, b) => b.sc - a.sc);
-    const head = scored.slice(0, 2).sort((a, b) => b.sc - a.sc)[0] || scored[0];
-    const lead = head;
-    const rest = ranked.filter((x) => x.idx !== lead.idx).slice(0, 3)
+    /* 摘要首句：优先在开头 8 句里挑「命中关键词且足够完整」的一句，
+       避免把封面语、插图对白当成全文结论 */
+    const usable = (s) => s.sc > 0 && s.s.length >= 18;
+    const early = scored.slice(0, 8).filter(usable);
+    let lead;
+    if (early.length) {
+      lead = early.sort((a, b) => b.sc - a.sc)[0];
+    } else {
+      lead = ranked.filter(usable)[0] || scored[0];
+    }
+    const restPool = ranked.filter((x) => x.idx !== lead.idx && usable(x));
+    const rest = (restPool.length >= 2 ? restPool : ranked.filter((x) => x.idx !== lead.idx))
+      .slice(0, 3)
       .sort((a, b) => a.idx - b.idx);
     return {
       tldr: trimTo(lead.s, 90),
@@ -185,15 +195,19 @@ window.Engine = (function () {
       };
     });
 
-    /* 未提取正文的占位资料：不参与关键词与摘要 */
+    /* 未提取正文的资料：不参与关键词与摘要，只标记待解析 */
     docs.forEach(function (d) {
-      if (/已记录元信息|补充正文后重新分析/.test(d.content || '')) {
-        insights[d.id].keywords = [];
-        insights[d.id].keywordScores = [];
-        insights[d.id].points = [];
-        insights[d.id].theme = (d.tags && d.tags[0]) || '待补全';
-        insights[d.id].tldr = '该文件尚未提取正文，暂时无法生成摘要。可在资料详情中粘贴内容后重新分析。';
-      }
+      const text = String(d.content || '').trim();
+      const missing = d.needsText === true || !text ||
+        /未能提取|已记录元信息|补充正文后重新分析|尚未提取正文/.test(text);
+      const ins = insights[d.id];
+      ins.needsText = !!missing;
+      if (!missing) return;
+      ins.keywords = [];
+      ins.keywordScores = [];
+      ins.points = [];
+      ins.theme = (d.tags && d.tags[0]) || '待补全';
+      ins.tldr = '尚未提取到可分析的正文，暂时无法生成摘要。';
     });
 
     /* 2) 关联：共享关键词 + 同主题 */

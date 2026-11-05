@@ -5,6 +5,7 @@
  * 除静态托管外，额外提供三个本机能力（浏览器沙箱无法直接做到）：
  *   GET  /api/health       探测是否为本地模式
  *   POST /api/files        把导入的文件写入访达可见的仓库目录
+ *   GET  /api/extract      从仓库里的 PDF / DOCX / PPTX / 文本中提取正文
  *   POST /api/reveal       在访达中定位 / 打开该文件
  *   POST /api/open-folder  打开仓库目录
  *
@@ -22,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
+const { extract } = require('./lib/extract');
 
 const ROOT = __dirname;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -207,8 +209,25 @@ async function handleApi(req, res, url) {
       platform: process.platform,
       vault: vaultLabel(),
       canReveal: ['darwin', 'win32', 'linux'].indexOf(process.platform) >= 0,
+      canExtract: true,
+      pdfEngine: process.platform === 'darwin' ? 'pdfkit' : 'fallback',
       dryRun: REVEAL_DRY
     });
+  }
+
+  /* 提取正文：导入后自动生成摘要、或详情里点「重新提取正文」时调用 */
+  if (url.pathname === '/api/extract' && req.method === 'GET') {
+    const abs = resolveInVault(url.searchParams.get('rel'));
+    if (!abs) return json(res, 404, { ok: false, error: '仓库中找不到该文件（可能已被移动或删除）' });
+
+    const started = Date.now();
+    const result = await extract(abs);
+    if (!result.ok) return json(res, 422, result);
+
+    console.log(CYAN + '  ⌘ 解析正文' + RESET + ' ' + path.basename(abs) +
+      DIM + '  ' + result.chars + '字' + (result.pages ? ' · ' + result.pages + '页' : '') +
+      ' · ' + (Date.now() - started) + 'ms' + RESET);
+    return json(res, 200, result);
   }
 
   /* 保存上传的文件到仓库 */

@@ -2095,6 +2095,35 @@
     }
   }
 
+  /* 已有资料（此版本之前导入的 PDF/Office）在本地启动时批量补解析一次 */
+  async function backfillText() {
+    if (!state.localMode || !state.docs.length) return;
+    const a = ensureAnalysis();
+    const pending = state.docs.filter(function (d) {
+      const ins = a.insights[d.id];
+      return ins && ins.needsText && d.fileRel && EXTRACT_TYPES.indexOf(d.type) >= 0 && !d.extractTried;
+    }).slice(0, 12);
+    if (!pending.length) return;
+
+    let done = 0;
+    for (let i = 0; i < pending.length; i++) {
+      const d = pending[i];
+      d.extractTried = true;
+      const r = await apiExtract(d.fileRel);
+      if (r && r.ok && r.text) {
+        d.content = r.text.slice(0, 20000);
+        d.needsText = false;
+        d.pages = r.pages || d.pages || 0;
+        d.extractedAt = new Date().toISOString();
+        done += 1;
+      }
+    }
+    recompute();
+    save();
+    render();
+    if (done) toast('已补齐 ' + done + ' 份资料的正文，摘要已生成', 'check');
+  }
+
   async function backupOne(id) {
     const d = docById(id);
     if (!d) return;
@@ -2391,6 +2420,7 @@
     render();
     probeLocal().then(function () {
       if (state.view === 'overview' && !state.docs.length) render();
+      backfillText();
     });
 
     $('#importBtn').addEventListener('click', openImport);

@@ -458,7 +458,12 @@ svg{ display:block; }
   box-shadow: var(--shadow-1); display:flex; flex-direction:column; gap:11px;
   transition: box-shadow .3s var(--ease), transform .3s var(--spring);
 }
-.sum-card:hover{ box-shadow: var(--shadow-2); }
+.sum-card{ cursor:pointer; }
+.sum-card:hover{ box-shadow: var(--shadow-2); transform: translateY(-2px); }
+.sum-card:active{ transform: scale(.995); }
+.sum-card:focus-visible{ outline: 2px solid rgba(10,132,255,.6); outline-offset: 2px; }
+.sum-title{ transition: color .2s var(--ease); }
+.sum-card:hover .sum-title{ color: #0a84ff; }
 .sum-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
 .sum-title{ font-size:14px; font-weight:640; letter-spacing:-.012em; }
 .sum-tldr{ font-size:12.5px; color: var(--label-2); line-height:1.62; }

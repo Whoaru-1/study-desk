@@ -495,7 +495,7 @@
     return '<div class="sum-grid">' + docs.map((d, i) => {
       const ins = a.insights[d.id];
       const relCount = a.edges.filter((e) => e.source === d.id || e.target === d.id).length;
-      return '<div class="sum-card reveal" style="animation-delay:' + Math.min(i * 20, 200) + 'ms">' +
+      return '<div class="sum-card reveal" data-act="doc" data-id="' + d.id + '" data-original="1" role="button" tabindex="0" aria-label="查看《' + esc(shortTitle(d.title)) + '》详情" style="animation-delay:' + Math.min(i * 20, 200) + 'ms">' +
         '<div class="sum-head"><div style="min-width:0">' +
           '<div class="sum-title">' + esc(shortTitle(d.title)) + '</div>' +
           '<div class="doc-meta" style="margin-top:4px"><span>' + (window.TYPE_META[d.type] || {}).label + '</span><i></i><span>' + esc(ins.theme) + '</span><i></i><span>' + relCount + ' 条关联</span></div>' +
@@ -1490,6 +1490,11 @@
         e.preventDefault();
         input.focus();
         input.select();
+      }
+      if ((e.key === 'Enter' || e.key === ' ') && document.activeElement &&
+          document.activeElement.classList && document.activeElement.classList.contains('sum-card')) {
+        e.preventDefault();
+        document.activeElement.click();
       }
       if (e.key === 'Escape') {
         if ($('#sheetRoot').classList.contains('open')) closeSheet();

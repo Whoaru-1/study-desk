@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 依赖与构建产物（本项目零依赖，留作占位）
+node_modules/
+dist/
+
+# 本地工作目录与日志
+.workbuddy/
+*.log
+npm-debug.log*
+
+# 编辑器
+.vscode/
+.idea/
+*.swp

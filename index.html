@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="color-scheme" content="light" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>学习资料工作台 · Study Desk</title>
+<meta name="description" content="本地优先的个人学习资料工作台：导入与分类资料，自动提炼摘要、归纳知识主题、识别知识缺口，并生成可执行的复习计划与学习路径。" />
+<meta name="theme-color" content="#f5f5f7" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Study Desk" />
+<meta name="format-detection" content="telephone=no" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="学习资料工作台 · Study Desk" />
+<meta property="og:description" content="本地优先的学习资料管理与知识分析工作台。资料不上传，分析在本机完成。" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235856d6'/%3E%3Cpath d='M9 10h6v13H9zM17 10h6v13h-6z' fill='%23fff' opacity='.92'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<noscript><div style="position:fixed;inset:0;display:grid;place-items:center;background:#f5f5f7;font:14px/1.6 -apple-system,'PingFang SC',sans-serif;color:#1c1c1e;z-index:99;text-align:center;padding:24px">需要启用 JavaScript 才能使用学习资料工作台。</div></noscript>
+<div class="app">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M4 7.5C4 6.1 5.1 5 6.5 5h3.2c.7 0 1.4.3 1.9.8l.9.9c.3.3.7.5 1.1.5h4c1.4 0 2.5 1.1 2.5 2.5v7.2c0 1.4-1.1 2.6-2.5 2.6h-10C5.1 19.5 4 18.3 4 16.9V7.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 12.5h8M8 15.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </div>
+      <div class="brand-text">
+        <strong>学习资料工作台</strong>
+        <span>Study Desk · 本地知识库</span>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item active" data-view="overview">
+        <svg viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="13" y="4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="4" y="13" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="13" y="13" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/></svg>
+        <span>总览</span>
+      </button>
+      <button class="nav-item" data-view="library">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M5 5.5A1.5 1.5 0 0 1 6.5 4H10v16H6.5A1.5 1.5 0 0 1 5 18.5v-13Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 4h3.5A1.5 1.5 0 0 1 15 5.5v13A1.5 1.5 0 0 1 13.5 20H10V4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m16.6 5.6 1.6-.4c.8-.2 1.6.3 1.8 1.1l2 8.9c.2.8-.3 1.6-1.1 1.8l-1.6.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span>资料库</span>
+        <em class="nav-badge" id="navDocCount">0</em>
+      </button>
+      <button class="nav-item" data-view="topics">
+        <svg viewBox="0 0 24 24" fill="none"><path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4 12 8 4.5 8-4.5M4 16.5 12 21l8-4.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>
+        <span>知识主题</span>
+      </button>
+      <button class="nav-item" data-view="analysis">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 3.5l1.6 4.3 4.4 1.6-4.4 1.6L12 15.3l-1.6-4.3L6 9.4l4.4-1.6L12 3.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M17.8 14.6l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8.8-2.1Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+        <span>智能分析</span>
+        <i class="nav-dot" id="navInsightDot" hidden></i>
+      </button>
+      <button class="nav-item" data-view="backup">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M7 18.5h9.5a3.5 3.5 0 0 0 .5-6.96A5 5 0 0 0 7.2 10.6 4 4 0 0 0 7 18.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m10.2 13.9 1.5 1.5 2.9-2.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>备份</span>
+      </button>
+    </nav>
+
+    <div class="side-status" id="sideStatus"></div>
+
+    <div class="sidebar-foot">
+      <div class="privacy-card">
+        <div class="privacy-head">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 3.5 5.5 6v5.4c0 4 2.7 7.4 6.5 8.6 3.8-1.2 6.5-4.6 6.5-8.6V6L12 3.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9.6 11.9l1.7 1.7 3.2-3.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>数据仅存本机</span>
+        </div>
+        <p>资料与总结仅保存在本机浏览器，不上传任何服务器。</p>
+        <div class="privacy-row">
+          <span>隐私遮罩</span>
+          <button class="switch" id="privacySwitch" role="switch" aria-checked="false" aria-label="隐私遮罩"><i></i></button>
+        </div>
+      </div>
+      <div class="storage-line">
+        <span id="storageText">本地存储 · 0 KB</span>
+        <button class="link-btn" id="exportDataBtn">导出备份</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-left">
+        <h1 id="viewTitle">总览</h1>
+        <p id="viewSub">你的学习资料索引与洞察</p>
+      </div>
+      <div class="topbar-right">
+        <label class="search" id="searchWrap">
+          <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.2" stroke="currentColor" stroke-width="1.7"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          <input id="searchInput" type="search" placeholder="搜索资料 / 标签 / 关键词" autocomplete="off" />
+          <kbd>⌘K</kbd>
+        </label>
+        <button class="btn btn-primary" id="importBtn" aria-label="导入资料">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 5v9m0-9 3.2 3.2M12 5 8.8 8.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 15v2.5A1.5 1.5 0 0 0 6.5 19h11a1.5 1.5 0 0 0 1.5-1.5V15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <span>导入资料</span>
+        </button>
+      </div>
+    </header>
+    <div class="scroll-area" id="scrollArea">
+      <div class="content" id="content"></div>
+      <div class="foot-note">学习资料工作台 · 本地优先 · 所有分析在你的设备上完成</div>
+    </div>
+  </main>
+</div>
+
+<!-- Mobile tab bar -->
+<nav class="tabbar" id="tabbar">
+  <button class="tab active" data-view="overview"><svg viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.7"/><rect x="13" y="4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.7"/><rect x="4" y="13" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.7"/><rect x="13" y="13" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.7"/></svg><span>总览</span></button>
+  <button class="tab" data-view="library"><svg viewBox="0 0 24 24" fill="none"><path d="M5 6h5v14H5zM11 6h4v14h-4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m17 7 1.6-.4 2 9-1.6.4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>资料</span></button>
+  <button class="tab" data-view="topics"><svg viewBox="0 0 24 24" fill="none"><path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m4 12 8 4.5 8-4.5M4 16.5 12 21l8-4.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>主题</span></button>
+  <button class="tab" data-view="analysis"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4l1.5 4 4 1.5-4 1.5L12 15l-1.5-4L6.5 9.5l4-1.5L12 4Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M17.5 15l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7.7-1.9Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg><span>分析</span></button>
+  <button class="tab" data-view="backup"><svg viewBox="0 0 24 24" fill="none"><path d="M7 18.5h9.5a3.5 3.5 0 0 0 .5-6.96A5 5 0 0 0 7.2 10.6 4 4 0 0 0 7 18.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>备份</span></button>
+</nav>
+
+<div class="sheet-root" id="sheetRoot" aria-hidden="true"></div>
+<div class="toast-root" id="toastRoot"></div>
+<input type="file" id="fileInput" multiple hidden />
+
+<script src="js/data.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

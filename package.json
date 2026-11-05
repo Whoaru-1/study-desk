@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "check": "node --check js/data.js && node --check js/engine.js && node --check js/app.js"
+    "check": "node --check js/config.js && node --check js/engine.js && node --check js/app.js"
   },
   "engines": {
     "node": ">=16"

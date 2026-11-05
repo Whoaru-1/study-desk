@@ -4,7 +4,8 @@
 
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.prototype.slice.call((r || document).querySelectorAll(s));
-  const LS_KEY = 'studydesk.v1';
+  const LS_KEY = 'studydesk.v2';
+  const LEGACY_KEYS = ['studydesk.v1'];
   const PALETTE = ['#0a84ff', '#5856d6', '#af52de', '#ff375f', '#ff9500', '#30b0c7', '#2fbf5c', '#5ac8fa', '#ff6482', '#8e8e93'];
   const TYPE_COLOR = { pdf: '#ff3b30', md: '#5856d6', docx: '#0a84ff', pptx: '#ff9500', note: '#e0a300', url: '#2fbf5c' };
   const PRI = { high: '高优先', mid: '中优先', low: '低优先' };
@@ -97,10 +98,48 @@
     }, 2300);
   }
 
+  /* ---------------- 本地能力（仅 npm start 时可用） ---------------- */
+  async function apiHealth() {
+    try {
+      const r = await fetch('/api/health', { cache: 'no-store' });
+      if (!r.ok) return null;
+      const d = await r.json();
+      return d && d.local ? d : null;
+    } catch (e) { return null; }
+  }
+
+  async function apiUpload(file) {
+    const r = await fetch('/api/files?name=' + encodeURIComponent(file.name), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file
+    });
+    if (!r.ok) throw new Error('上传失败 HTTP ' + r.status);
+    return r.json();
+  }
+
+  async function apiPost(path, payload) {
+    try {
+      const r = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {})
+      });
+      return await r.json();
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
+
+  async function probeLocal() {
+    const h = await apiHealth();
+    state.localMode = !!h;
+    state.vault = h && h.vault ? h.vault : '';
+    updateChrome();
+  }
+
   /* ---------------- 状态 ---------------- */
   function defaultState() {
     return {
-      docs: JSON.parse(JSON.stringify(window.SEED_DOCS || [])),
+      docs: [],
       adopted: [],
       analysis: null,
       view: 'overview',
@@ -110,7 +149,8 @@
       analysisTab: 'summary',
       privacy: false,
       autoBackup: true,
-      seeded: true
+      localMode: false,
+      vault: ''
     };
   }
 
@@ -219,8 +259,11 @@
         '<p style="margin-top:6px">导入第一份资料，学习 Agent 会自动提炼主题、识别缺口并给出复习安排。</p>' +
         '<div style="display:flex;gap:8px;justify-content:center;margin-top:18px">' +
           '<button class="btn btn-primary" data-act="import-open" style="justify-content:center">导入资料</button>' +
-          '<button class="btn btn-ghost" data-act="restore-seed">载入示例资料</button>' +
+          (state.localMode ? '<button class="btn btn-ghost" data-act="open-folder">打开资料文件夹</button>' : '') +
         '</div>' +
+        (state.localMode
+          ? '<p style="margin-top:14px;font-size:11.5px;color:var(--label-3)">原件会存入 ' + esc(state.vault) + '，导入后可在访达中直接打开</p>'
+          : '<p style="margin-top:14px;font-size:11.5px;color:var(--label-3)">用 <b>npm start</b> 本地运行后，可把原件存入访达目录并直接打开</p>') +
       '</div></div>';
   }
 
@@ -751,7 +794,7 @@
             '<span class="gap-desc">资料正文与生成的总结仅写入浏览器 localStorage，分析引擎在页面内运行，不发送任何网络请求。</span></span></div>' +
           '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">' +
             '<button class="btn btn-sm btn-ghost" data-act="export-json">导出 JSON 存档</button>' +
-            '<button class="btn btn-sm btn-ghost" data-act="restore-seed">恢复示例资料</button>' +
+            (state.localMode ? '<button class="btn btn-sm btn-ghost" data-act="open-folder">打开资料文件夹</button>' : '') +
             '<button class="btn btn-sm btn-ghost" style="color:#c3271e" data-act="clear-data">清空本机数据</button>' +
           '</div>' +
         '</div>' +
@@ -1026,6 +1069,17 @@
           '<span class="rel-w">' + esc((r.shared || []).slice(0, 2).join('·')) + '</span></button>').join('') +
         '</div>' : '') +
 
+      (d.fileRel ? '<div class="sheet-section-title">原始文件</div>' +
+        '<div class="file-card">' +
+          '<span class="file-ico" style="background:' + (window.TYPE_META[d.type] || {}).color + '">' + (window.TYPE_META[d.type] || {}).short + '</span>' +
+          '<span class="file-main"><b>' + esc(d.fileName || d.title) + '</b>' +
+          '<span>' + (state.localMode ? esc(state.vault || '资料文件夹') : '浏览器模式 · 无法访问本机文件') + '</span></span>' +
+          '<span class="file-acts">' +
+            '<button class="btn btn-sm" data-act="reveal" data-id="' + d.id + '">在访达中显示</button>' +
+            '<button class="btn btn-sm btn-ghost" data-act="open-file" data-id="' + d.id + '">打开</button>' +
+          '</span>' +
+        '</div>' : '') +
+
       '<div class="sheet-section-title">原始文档</div>' +
       '<div class="original" id="originalText">' + Engine.highlight(d.content || '（暂无正文，可在导入时粘贴内容）', ins.keywords) + '</div>';
 
@@ -1037,7 +1091,9 @@
       body: body,
       footer: '<button class="btn btn-sm" style="color:#c3271e" data-act="delete-doc" data-id="' + d.id + '">删除资料</button>' +
         '<div class="group">' +
-          '<button class="btn btn-sm" data-act="goto-original">查看原文</button>' +
+          (d.fileRel && state.localMode
+            ? '<button class="btn btn-sm" data-act="reveal" data-id="' + d.id + '">在访达中显示</button>'
+            : '<button class="btn btn-sm" data-act="goto-original">查看原文</button>') +
           '<button class="btn btn-sm" data-act="backup" data-id="' + d.id + '">' + (st.cls === 'ok' ? '重新备份' : '立即备份') + '</button>' +
           '<button class="btn btn-sm btn-primary" data-act="close-sheet">完成</button>' +
         '</div>'
@@ -1090,7 +1146,8 @@
     openSheet({
       eyebrow: '导入资料',
       title: '把资料收进知识库',
-      meta: '<span>本地解析</span><span>·</span><span>支持 Markdown / 文本 / Word / PDF / PPT</span>',
+      meta: '<span>本地解析</span><span>·</span><span>支持 Markdown / 文本 / Word / PDF / PPT</span>' +
+        (state.localMode ? '<span>·</span><span>原件存入 ' + esc(state.vault) + '</span>' : ''),
       body:
         '<div class="dropzone" id="dropzone">' +
           '<b>拖入文件，或点击选择</b>' +
@@ -1157,7 +1214,9 @@
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       lastReviewed: null,
-      backup: { state: 'local', at: null }
+      backup: { state: 'local', at: null },
+      fileRel: data.fileRel || null,
+      fileName: data.fileName || null
     };
     state.docs.unshift(doc);
     recompute();
@@ -1186,42 +1245,68 @@
     toast('已移除标签「' + tag + '」');
   }
 
-  function importFiles(files) {
+  function readTextFile(f, ext) {
+    return new Promise(function (resolve) {
+      const reader = new FileReader();
+      reader.onload = function () {
+        let text = String(reader.result || '');
+        if (ext === 'html' || ext === 'htm') {
+          text = text.replace(/<script[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[\s\S]*?<\/style>/gi, '')
+            .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+        } else if (ext === 'md' || ext === 'markdown') {
+          text = stripMarkup(text);
+        }
+        resolve(text);
+      };
+      reader.onerror = function () { resolve(''); };
+      reader.readAsText(f);
+    });
+  }
+
+  async function importFiles(files) {
     const list = Array.prototype.slice.call(files);
     if (!list.length) return;
     closeSheet();
-    let done = 0;
-    list.forEach((f) => {
+
+    const typeMap = { pdf: 'pdf', md: 'md', markdown: 'md', docx: 'docx', doc: 'docx', pptx: 'pptx', ppt: 'pptx', txt: 'note', json: 'note', csv: 'note', html: 'url', htm: 'url' };
+    let stored = 0;
+
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
       const ext = (f.name.split('.').pop() || '').toLowerCase();
-      const typeMap = { pdf: 'pdf', md: 'md', markdown: 'md', docx: 'docx', doc: 'docx', pptx: 'pptx', ppt: 'pptx', txt: 'note', json: 'note', csv: 'note', html: 'url', htm: 'url' };
       const type = typeMap[ext] || 'note';
       const title = f.name.replace(/\.[^.]+$/, '');
-      if (TEXT_EXT.indexOf(ext) >= 0) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          let text = String(reader.result || '');
-          if (ext === 'html' || ext === 'htm') text = text.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-          else if (ext === 'md' || ext === 'markdown') text = stripMarkup(text);
-          addDoc({ title: title, type: type, content: text.slice(0, 20000), size: f.size, tags: [] });
-          done++;
-          if (done === list.length) {
-            render();
-            toast('已导入 ' + done + ' 份资料', 'check');
-          }
-        };
-        reader.readAsText(f);
-      } else {
-        addDoc({
-          title: title, type: type, size: f.size, tags: [],
-          content: '（' + (window.TYPE_META[type] || {}).label + ' 文件，已记录元信息。可在资料详情中补充正文后重新分析。）'
-        });
-        done++;
-        if (done === list.length) {
-          render();
-          toast('已导入 ' + done + ' 份资料', 'check');
+
+      /* 本地模式：先落盘到访达可见的仓库，之后才能「在访达中显示」 */
+      let saved = null;
+      if (state.localMode) {
+        toast('正在写入资料文件夹…');
+        try {
+          const res = await apiUpload(f);
+          if (res && res.ok && res.file) { saved = res.file; stored += 1; }
+        } catch (err) {
+          console.warn('原件入库失败，退化为浏览器内保存：', err);
         }
       }
-    });
+
+      const content = TEXT_EXT.indexOf(ext) >= 0
+        ? (await readTextFile(f, ext)).slice(0, 20000)
+        : '（' + (window.TYPE_META[type] || {}).label + ' 文件，已记录元信息。可在资料详情中补充正文后重新分析。）';
+
+      addDoc({
+        title: title,
+        type: type,
+        content: content,
+        size: f.size,
+        tags: [],
+        fileRel: saved ? saved.rel : null,
+        fileName: saved ? saved.name : null
+      });
+    }
+
+    render();
+    toast('已导入 ' + list.length + ' 份资料' + (stored ? ' · ' + stored + ' 份原件已入库' : ''), 'check');
   }
 
   async function backupOne(id) {
@@ -1393,6 +1478,23 @@
         toast('已保存到资料库', 'check');
         break;
       }
+      case 'reveal':
+      case 'open-file': {
+        const d2 = docById(btn.getAttribute('data-id'));
+        if (!d2 || !d2.fileRel) { toast('这份资料没有关联的本机文件'); break; }
+        if (!state.localMode) { toast('线上模式无法访问本机文件，请用 npm start 本地打开'); break; }
+        const r2 = await apiPost('/api/reveal', { rel: d2.fileRel, mode: act === 'open-file' ? 'open' : 'reveal' });
+        if (r2 && r2.ok) toast(act === 'open-file' ? '已用默认应用打开' : '已在访达中定位该文件', 'check');
+        else toast('打开失败：' + ((r2 && r2.error) || '本地服务未响应'));
+        break;
+      }
+      case 'open-folder': {
+        if (!state.localMode) { toast('该功能需要本地运行（npm start）'); break; }
+        const r3 = await apiPost('/api/open-folder', {});
+        if (r3 && r3.ok) toast('已打开资料文件夹', 'check');
+        else toast('无法打开：' + ((r3 && r3.error) || '未知错误'));
+        break;
+      }
       case 'goto-original': {
         const el = $('#originalText');
         if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -1402,7 +1504,9 @@
       case 'delete-doc': {
         const id = btn.getAttribute('data-id');
         const d = docById(id);
-        const ok = await confirmSheet('删除这份资料？', '「' + esc(d ? d.title : '') + '」及其标签会从本机移除，此操作无法撤销。建议先导出 JSON 存档。', '删除');
+        const ok = await confirmSheet('删除这份资料？',
+          '「' + esc(d ? d.title : '') + '」及其标签会从资料库移除，此操作无法撤销。' +
+          (d && d.fileRel ? '原始文件仍保留在资料文件夹中，不会一并删除。' : '建议先导出 JSON 存档。'), '删除');
         if (ok) {
           state.docs = state.docs.filter((x) => x.id !== id);
           recompute();
@@ -1431,20 +1535,6 @@
         }
         break;
       }
-      case 'restore-seed': {
-        const ok = await confirmSheet('恢复示例资料？', '当前资料会被替换为 14 篇宏观经济学示例，用于体验完整功能。', '恢复示例');
-        if (ok) {
-          state.docs = JSON.parse(JSON.stringify(window.SEED_DOCS));
-          state.adopted = [];
-          state.activeTags = [];
-          state.query = '';
-          $('#searchInput').value = '';
-          recompute();
-          render();
-          toast('已恢复示例资料', 'check');
-        }
-        break;
-      }
       default: break;
     }
   });
@@ -1453,8 +1543,14 @@
   document.addEventListener('DOMContentLoaded', init);
 
   function init() {
+    /* 旧版本（含示例资料）的存储直接作废，避免示例数据残留在资料库里 */
+    LEGACY_KEYS.forEach(function (k) { try { localStorage.removeItem(k); } catch (e) {} });
+
     state = load();
     render();
+    probeLocal().then(function () {
+      if (state.view === 'overview' && !state.docs.length) render();
+    });
 
     $('#importBtn').addEventListener('click', openImport);
     $('#privacySwitch').addEventListener('click', () => {

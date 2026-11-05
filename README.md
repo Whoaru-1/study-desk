@@ -4,6 +4,9 @@
 
 零依赖 · 零构建 · 无后端 · 不上传任何数据。
 
+**线上地址**：https://whoaru-1.github.io/study-desk/
+**本地地址**：http://127.0.0.1:4173 （`npm start`）
+
 ![tech](https://img.shields.io/badge/stack-HTML%20%2B%20CSS%20%2B%20Vanilla%20JS-5856d6)
 ![deps](https://img.shields.io/badge/dependencies-0-2fbf5c)
 ![license](https://img.shields.io/badge/license-MIT-0a84ff)

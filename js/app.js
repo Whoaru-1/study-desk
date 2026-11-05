@@ -2043,7 +2043,7 @@
         (lockLevel ? '该主标签下已有次标签，不能再改为次标签（最多两级）。' : '还没有其它主标签可作为归属，先创建一个主标签。') + '</div>') +
       parentSelect +
       '<div class="path-preview" id="tagPathPreview"></div>' +
-      (t && !t.parentId
+      (t && !t.parentId && !subs.length
         ? '<button class="link-btn" style="margin-top:8px" data-act="tag-new-sub" data-parent="' + t.id + '">＋ 在此标签下新建次标签</button>'
         : '') +
 

@@ -129,7 +129,19 @@
     } catch (e) { return { ok: false, error: e.message }; }
   }
 
+  function isLocalOrigin() {
+    const h = location.hostname;
+    return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]';
+  }
+
   async function probeLocal() {
+    /* 非本机地址（GitHub Pages / file://）直接跳过，避免多余的 404 请求 */
+    if (!isLocalOrigin()) {
+      state.localMode = false;
+      state.vault = '';
+      updateChrome();
+      return;
+    }
     const h = await apiHealth();
     state.localMode = !!h;
     state.vault = h && h.vault ? h.vault : '';

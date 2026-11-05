@@ -1490,7 +1490,11 @@
       else panel.innerHTML = tagPickerHtml(docById(docId), input.value);
     });
     input.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') { close(); input.blur(); return; }
+      if (e.key === 'Escape') {
+        /* 先收起选择器；选择器已收起时才让 Esc 去关面板 */
+        if (!panel.hidden) { e.stopPropagation(); close(); input.blur(); }
+        return;
+      }
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         if (panel.hidden) open();

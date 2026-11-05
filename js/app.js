@@ -207,7 +207,7 @@
   }
 
   function recompute() {
-    state.analysis = window.Engine.analyze(state.docs);
+    state.analysis = window.Engine.analyze(state.docs, state.tags);
     save();
   }
 
@@ -244,6 +244,49 @@
     return tagList().filter((t) => t.id === id)[0] || null;
   }
 
+  /* ---------------- 标签层级：主标签 / 次标签 ----------------
+     数据结构：主标签 parentId = null；次标签 parentId 指向主标签 id。
+     最多两级（主 → 次），名称全局唯一，因为资料按名称引用标签。 */
+  function tagParent(t) {
+    if (!t || !t.parentId) return null;
+    const p = tagById(t.parentId);
+    return p && !p.parentId ? p : null;
+  }
+
+  function isSubTag(t) { return !!tagParent(t); }
+
+  function mainTags() {
+    return tagList().filter(function (t) { return !t.parentId; });
+  }
+
+  function subTagsOf(mainId) {
+    return tagList().filter(function (t) { return t.parentId === mainId; });
+  }
+
+  function tagPath(t) {
+    const p = tagParent(t);
+    return p ? p.name + ' / ' + t.name : t.name;
+  }
+
+  /* 主标签 + 其次标签，按文件夹资料量排序 */
+  function tagTree() {
+    const arr = mainTags().map(function (m) {
+      const subs = subTagsOf(m.id).sort(function (x, y) {
+        return tagUsage(y.name) - tagUsage(x.name) || x.name.localeCompare(y.name, 'zh-Hans-CN');
+      });
+      return { main: m, subs: subs, count: folderUsage(m) };
+    });
+    arr.sort(function (a, b) {
+      return b.count - a.count || a.main.name.localeCompare(b.main.name, 'zh-Hans-CN');
+    });
+    return arr;
+  }
+
+  /* 文件夹折叠状态按标签 id 记，改名后不会失联 */
+  function isFolderClosed(id) {
+    return (state.closedFolders || []).indexOf(id) >= 0;
+  }
+
   function shade(hex, k) {
     const n = parseInt(String(hex || '#8e8e93').replace('#', ''), 16);
     const r = Math.round(((n >> 16) & 255) * (1 - k));
@@ -273,13 +316,25 @@
     return state.docs.filter((d) => (d.tags || []).indexOf(name) >= 0).length;
   }
 
-  function ensureTag(name, color) {
+  /* 文件夹口径：主标签的文件夹包含其所有次标签下的资料 */
+  function folderUsage(tag) {
+    if (!tag) return 0;
+    if (tag.parentId) return tagUsage(tag.name);
+    const subs = subTagsOf(tag.id).map(function (s) { return s.name; });
+    if (!subs.length) return tagUsage(tag.name);
+    return state.docs.filter(function (d) {
+      const tags = d.tags || [];
+      return tags.indexOf(tag.name) >= 0 || tags.some(function (x) { return subs.indexOf(x) >= 0; });
+    }).length;
+  }
+
+  function ensureTag(name, color, parentId) {
     const clean = cleanTagName(name);
     if (!clean) return null;
     let t = tagByName(clean);
     if (!t) {
       t = {
-        id: tagId(), name: clean, color: color || pickTagColor(),
+        id: tagId(), name: clean, color: color || pickTagColor(), parentId: parentId || null,
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
       };
       tagList().push(t);
@@ -287,7 +342,7 @@
     return t;
   }
 
-  /* 迁移 / 自愈：补登记、去重、清理非法名称与颜色 */
+  /* 迁移 / 自愈：补登记、去重、清理非法名称与颜色，并修复层级 */
   function normalizeTags() {
     if (!Array.isArray(state.tags)) state.tags = [];
     if (!Array.isArray(state.closedFolders)) state.closedFolders = [];
@@ -306,11 +361,22 @@
         id: t.id || tagId(),
         name: name,
         color: /^#[0-9a-f]{6}$/i.test(t.color || '') ? t.color : '',
+        parentId: typeof t.parentId === 'string' && t.parentId ? t.parentId : null,
         createdAt: t.createdAt || new Date().toISOString(),
         updatedAt: t.updatedAt || t.createdAt || new Date().toISOString()
       });
     });
     state.tags = list;
+
+    /* 层级自愈：父级必须存在、必须是主标签；出现三级时把中间层提为主标签 */
+    const byId = {};
+    list.forEach(function (t) { byId[t.id] = t; });
+    list.forEach(function (t) {
+      if (!t.parentId) return;
+      const p = byId[t.parentId];
+      if (!p || p === t) { t.parentId = null; return; }
+      if (p.parentId) p.parentId = null;
+    });
 
     state.docs.forEach(function (d) {
       const out = [];
@@ -324,6 +390,12 @@
     state.tags.forEach(function (t) { if (!t.color) t.color = pickTagColor(); });
     state.docs.forEach(function (d) { d.tags.forEach(function (n) { ensureTag(n); }); });
     state.activeTags = state.activeTags.filter(function (n) { return n === UNTAGGED || !!tagByName(n); });
+
+    /* 旧版折叠状态按名称保存，这里换成标签 id */
+    state.closedFolders = state.closedFolders.map(function (k) {
+      const old = tagByName(k);
+      return old ? old.id : k;
+    }).filter(function (k) { return !!byId[k]; });
   }
 
   function tagChip(name, opt) {
@@ -337,7 +409,10 @@
     const inner = (opt.dot === false ? '' : '<i class="tg-dot" style="background:' + c + '"></i>') +
       '<span>' + esc(name) + '</span>' +
       (opt.count != null ? '<em>' + opt.count + '</em>' : '');
-    const cls = 'tag tg' + (opt.on ? ' on' : '') + (opt.cls ? ' ' + opt.cls : '');
+    /* 次标签统一带一个层级记号，筛选条、资料行、主题卡都一致 */
+    const tagObj = isUn ? null : tagByName(name);
+    const cls = 'tag tg' + (opt.on ? ' on' : '') + (tagObj && tagObj.parentId ? ' tg-sub' : '') +
+      (opt.cls ? ' ' + opt.cls : '');
     if (opt.act) {
       const dataAttr = opt.act === 'topic'
         ? ' data-topic="' + esc(name) + '"'
@@ -424,12 +499,16 @@
     if (opt.folderTag) {
       const others = tags.filter((t) => t !== opt.folderTag && t !== UNTAGGED);
       if (!others.length) return '';
+      const ft = tagByName(opt.folderTag);
+      const parentName = ft && ft.parentId ? ((tagById(ft.parentId) || {}).name || '') : '';
+      const onlyParent = parentName && others.length === 1 && others[0] === parentName;
+      const note = onlyParent
+        ? '所属主标签'
+        : (state.folderRule === 'primary' ? '另有 ' + others.length + ' 个标签' : '同属 ' + tags.length + ' 个文件夹');
       return '<span class="doc-tags">' +
         others.slice(0, 2).map((t) => tagChip(t)).join('') +
         (others.length > 2 ? '<span class="tag n">+' + (others.length - 2) + '</span>' : '') +
-        '<span class="doc-multi">' + (state.folderRule === 'primary'
-          ? '另有 ' + others.length + ' 个标签'
-          : '同属 ' + tags.length + ' 个文件夹') + '</span></span>';
+        '<span class="doc-multi">' + note + '</span></span>';
     }
     if (!tags.length) return '<span class="doc-tags"><span class="tag n">未打标签</span></span>';
     return '<span class="doc-tags">' +
@@ -573,7 +652,14 @@
       list = list.filter(function (d) {
         const tags = d.tags || [];
         return state.activeTags.some(function (name) {
-          return name === UNTAGGED ? !tags.length : tags.indexOf(name) >= 0;
+          if (name === UNTAGGED) return !tags.length;
+          if (tags.indexOf(name) >= 0) return true;
+          /* 选中主标签时，挂在其次标签下的资料同样命中 */
+          const main = tagByName(name);
+          if (main && !main.parentId) {
+            return subTagsOf(main.id).some(function (s) { return tags.indexOf(s.name) >= 0; });
+          }
+          return false;
         });
       });
     }
@@ -590,6 +676,40 @@
     return list;
   }
 
+  /* ---------------- 文件夹映射 ----------------
+     主标签 → 资料库里的主文件夹；次标签 → 该主文件夹下的子文件夹。
+     资料带次标签时自动归入「主 / 次」子文件夹，即使没显式打主标签。 */
+  function docInMain(d, main) {
+    const tags = d.tags || [];
+    const subs = subTagsOf(main.id).map(function (s) { return s.name; });
+    if (state.folderRule === 'primary') {
+      const first = tags[0];
+      if (!first) return false;
+      return first === main.name || subs.indexOf(first) >= 0;
+    }
+    return tags.indexOf(main.name) >= 0 || tags.some(function (t) { return subs.indexOf(t) >= 0; });
+  }
+
+  function docsInMain(main) {
+    return filteredDocs().filter(function (d) { return docInMain(d, main); });
+  }
+
+  function docsInSub(sub) {
+    return filteredDocs().filter(function (d) {
+      const tags = d.tags || [];
+      return state.folderRule === 'primary' ? tags[0] === sub.name : tags.indexOf(sub.name) >= 0;
+    });
+  }
+
+  /* 主文件夹根层的资料：只打了主标签、没落到任何次文件夹里的那些 */
+  function docsInMainRoot(main) {
+    const inSub = {};
+    subTagsOf(main.id).forEach(function (s) {
+      docsInSub(s).forEach(function (d) { inSub[d.id] = 1; });
+    });
+    return docsInMain(main).filter(function (d) { return !inSub[d.id]; });
+  }
+
   function folderDocs(tagName) {
     const primaryOnly = state.folderRule === 'primary';
     return filteredDocs().filter(function (d) {
@@ -600,22 +720,23 @@
     });
   }
 
+  const FOLDER_ICO = '<svg viewBox="0 0 24 24" fill="none"><path d="M3.5 7.6c0-.9.7-1.6 1.6-1.6h3.1c.5 0 .9.2 1.2.6l.8.9c.3.3.7.5 1.1.5h5.6c.9 0 1.6.7 1.6 1.6v7.8c0 .9-.7 1.6-1.6 1.6H5.1c-.9 0-1.6-.7-1.6-1.6V7.6Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+  const CHEV = '<svg class="folder-chev" viewBox="0 0 24 24" fill="none"><path d="m8 10 4 4 4-4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  /* 未归类这类伪文件夹 */
   function folderCard(tag, docs) {
     const c = tag.name === UNTAGGED ? '#8e8e93' : tag.color;
-    const closed = (state.closedFolders || []).indexOf(tag.name) >= 0;
+    const closed = tag.id ? isFolderClosed(tag.id) : (state.closedFolders || []).indexOf(tag.name) >= 0;
     const empty = !docs.length;
-    const chev = '<svg class="folder-chev" viewBox="0 0 24 24" fill="none"><path d="m8 10 4 4 4-4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
     return '<section class="folder' + (empty ? ' is-empty' : '') + (closed ? ' is-closed' : '') + '">' +
         '<div class="folder-head">' +
-          '<button class="folder-toggle" data-act="toggle-folder" data-tag="' + esc(tag.name) + '" aria-expanded="' + (!closed) + '">' +
-            '<span class="folder-ico" style="background:' + hexA(c, 0.14) + ';color:' + shade(c, 0.08) + '">' +
-              '<svg viewBox="0 0 24 24" fill="none"><path d="M3.5 7.6c0-.9.7-1.6 1.6-1.6h3.1c.5 0 .9.2 1.2.6l.8.9c.3.3.7.5 1.1.5h5.6c.9 0 1.6.7 1.6 1.6v7.8c0 .9-.7 1.6-1.6 1.6H5.1c-.9 0-1.6-.7-1.6-1.6V7.6Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>' +
-            '</span>' +
+          '<button class="folder-toggle" data-act="toggle-folder" data-id="' + (tag.id || 'untagged') + '" aria-expanded="' + (!closed) + '">' +
+            '<span class="folder-ico" style="background:' + hexA(c, 0.14) + ';color:' + shade(c, 0.08) + '">' + FOLDER_ICO + '</span>' +
             '<span class="folder-name">' + esc(tag.name) + '</span>' +
             '<span class="folder-count">' + docs.length + '</span>' +
             (empty ? '<span class="folder-empty">空</span>' : '') +
-            (empty ? '' : chev) +
+            (empty ? '' : CHEV) +
           '</button>' +
           '<span class="folder-acts">' +
             (empty ? '' : '<button class="link-btn" data-act="open-tag-library" data-tag="' + esc(tag.name) + '">只看此标签</button>') +
@@ -628,13 +749,78 @@
       '</section>';
   }
 
+  /* 次文件夹：嵌套在主文件夹内部 */
+  function subFolderCard(sub, docs, totalSubs) {
+    const closed = isFolderClosed(sub.id);
+    const empty = !docs.length;
+    return '<section class="subfolder' + (empty ? ' is-empty' : '') + (closed ? ' is-closed' : '') + '">' +
+        '<div class="subfolder-head">' +
+          '<button class="subfolder-toggle" data-act="toggle-folder" data-id="' + sub.id + '" aria-expanded="' + (!closed) + '">' +
+            '<span class="subfolder-line"></span>' +
+            '<span class="subfolder-ico" style="background:' + hexA(sub.color, 0.14) + ';color:' + shade(sub.color, 0.1) + '">' +
+              '<svg viewBox="0 0 24 24" fill="none"><path d="M3.5 7.6c0-.9.7-1.6 1.6-1.6h3.1c.5 0 .9.2 1.2.6l.8.9c.3.3.7.5 1.1.5h5.6c.9 0 1.6.7 1.6 1.6v7.8c0 .9-.7 1.6-1.6 1.6H5.1c-.9 0-1.6-.7-1.6-1.6V7.6Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>' +
+            '</span>' +
+            '<span class="subfolder-name">' + esc(sub.name) + '</span>' +
+            '<span class="folder-count">' + docs.length + '</span>' +
+            (empty ? '<span class="folder-empty">空</span>' : CHEV) +
+          '</button>' +
+          '<span class="folder-acts">' +
+            (empty ? '' : '<button class="link-btn" data-act="open-tag-library" data-tag="' + esc(sub.name) + '">只看此标签</button>') +
+            '<button class="link-btn" data-act="tag-edit" data-id="' + sub.id + '">设置</button>' +
+          '</span>' +
+        '</div>' +
+        (empty ? '' : '<div class="subfolder-body doc-list">' +
+          docs.map(function (d) { return docRow(d, { folderTag: sub.name, hideStatus: true }); }).join('') +
+        '</div>') +
+      '</section>';
+  }
+
+  /* 主文件夹：头部 + 子文件夹列表 + 根层资料
+     onlySubs：筛选时只渲染被选中的子文件夹 */
+  function mainFolderCard(main, onlySubs) {
+    const allSubs = subTagsOf(main.id).sort(function (x, y) {
+      return docsInSub(y).length - docsInSub(x).length || x.name.localeCompare(y.name, 'zh-Hans-CN');
+    });
+    const subs = onlySubs ? allSubs.filter(function (s) { return onlySubs.indexOf(s.id) >= 0; }) : allSubs;
+    const docs = docsInMain(main);
+    const rootDocs = docsInMainRoot(main);
+    const closed = isFolderClosed(main.id);
+    const empty = !docs.length && !subs.length;
+    const rootLabel = subs.length ? '未归入次标签' : '';
+
+    return '<section class="folder folder-main' + (empty ? ' is-empty' : '') + (closed ? ' is-closed' : '') + '">' +
+        '<div class="folder-head">' +
+          '<button class="folder-toggle" data-act="toggle-folder" data-id="' + main.id + '" aria-expanded="' + (!closed) + '">' +
+            '<span class="folder-ico" style="background:' + hexA(main.color, 0.14) + ';color:' + shade(main.color, 0.08) + '">' + FOLDER_ICO + '</span>' +
+            '<span class="folder-name">' + esc(main.name) + '</span>' +
+            '<span class="folder-count">' + docs.length + '</span>' +
+            (subs.length ? '<span class="folder-badge">' + subs.length + ' 个次标签</span>' : '') +
+            (empty ? '<span class="folder-empty">空</span>' : '') +
+            (empty ? '' : CHEV) +
+          '</button>' +
+          '<span class="folder-acts">' +
+            (docs.length ? '<button class="link-btn" data-act="open-tag-library" data-tag="' + esc(main.name) + '">只看此标签</button>' : '') +
+            '<button class="link-btn" data-act="tag-new-sub" data-parent="' + main.id + '">＋ 次标签</button>' +
+            '<button class="link-btn" data-act="tag-edit" data-id="' + main.id + '">设置</button>' +
+          '</span>' +
+        '</div>' +
+        (empty ? '' : '<div class="folder-body">' +
+          subs.map(function (s) { return subFolderCard(s, docsInSub(s), subs.length); }).join('') +
+          (rootDocs.length
+            ? (subs.length
+              ? '<div class="root-group"><span class="root-label">' + rootLabel + ' · ' + rootDocs.length + ' 篇</span>' +
+                '<div class="doc-list">' + rootDocs.map(function (d) { return docRow(d, { folderTag: main.name, hideStatus: true }); }).join('') + '</div></div>'
+              : '<div class="doc-list">' + rootDocs.map(function (d) { return docRow(d, { folderTag: main.name, hideStatus: true }); }).join('') + '</div>')
+            : '') +
+        '</div>') +
+      '</section>';
+  }
+
   function viewLibrary() {
     ensureAnalysis();
     const list = filteredDocs();
     const mode = state.libraryMode === 'list' ? 'list' : 'folder';
-    const tags = tagList().slice().sort(function (x, y) {
-      return tagUsage(y.name) - tagUsage(x.name) || x.name.localeCompare(y.name, 'zh-Hans-CN');
-    });
+    const tree = tagTree();
     const totalDocs = state.docs.length;
 
     const sortSeg = '<div class="segmented" data-seg="sort">' +
@@ -667,8 +853,14 @@
         (state.activeTags.indexOf(UNTAGGED) >= 0
           ? tagChip(UNTAGGED, { on: true, act: 'filter-tag', cls: 'tg-un' })
           : '') +
-        tags.map(function (t) {
-          return tagChip(t.name, { on: state.activeTags.indexOf(t.name) >= 0, act: 'filter-tag', count: tagUsage(t.name) });
+        tree.map(function (node) {
+          return tagChip(node.main.name, { on: state.activeTags.indexOf(node.main.name) >= 0, act: 'filter-tag', count: folderUsage(node.main) }) +
+            node.subs.map(function (s) {
+              return tagChip(s.name, {
+                on: state.activeTags.indexOf(s.name) >= 0, act: 'filter-tag',
+                count: tagUsage(s.name)
+              });
+            }).join('');
         }).join('') +
       '</div>';
 
@@ -686,9 +878,28 @@
       '</div>';
     } else {
       const untaggedDocs = folderDocs(UNTAGGED);
-      const filled = tags.filter(function (t) { return folderDocs(t.name).length > 0; });
-      const empty = tags.filter(function (t) { return folderDocs(t.name).length === 0; });
-      const cards = filled.map(function (t) { return folderCard(t, folderDocs(t.name)); }).join('') +
+      /* 有筛选时只保留命中的主标签及其子文件夹，避免出现无关文件夹 */
+      let view = tree;
+      if (state.activeTags.length) {
+        const selMain = {};
+        const selSub = {};
+        state.activeTags.forEach(function (name) {
+          const t = tagByName(name);
+          if (!t) return;
+          if (t.parentId) selSub[t.id] = 1; else selMain[t.id] = 1;
+        });
+        view = tree
+          .filter(function (n) { return selMain[n.main.id] || n.subs.some(function (s) { return selSub[s.id]; }); })
+          .map(function (n) {
+            if (selMain[n.main.id]) return { main: n.main, subs: n.subs, filtered: false };
+            return { main: n.main, subs: n.subs.filter(function (s) { return selSub[s.id]; }), filtered: true };
+          });
+      }
+      const filled = view.filter(function (n) { return docsInMain(n.main).length > 0 || n.subs.length > 0; });
+      const empty = view.filter(function (n) { return docsInMain(n.main).length === 0 && !n.subs.length; });
+      const cards = filled.map(function (n) {
+        return mainFolderCard(n.main, n.filtered ? n.subs.map(function (s) { return s.id; }) : null);
+      }).join('') +
         (untaggedDocs.length ? folderCard({ name: UNTAGGED, color: '#8e8e93', id: null }, untaggedDocs) : '');
 
       body =
@@ -697,16 +908,16 @@
           '<div class="segmented mini" data-seg="rule">' +
             '<span class="seg-ind"></span>' +
             '<button data-act="folder-rule" data-rule="all" class="' + (state.folderRule === 'all' ? 'active' : '') + '">出现在每个文件夹</button>' +
-            '<button data-act="folder-rule" data-rule="primary" class="' + (state.folderRule === 'primary' ? 'active' : '') + '">只归入主标签</button>' +
+            '<button data-act="folder-rule" data-rule="primary" class="' + (state.folderRule === 'primary' ? 'active' : '') + '">只归入第一个标签</button>' +
           '</div>' +
-          '<span class="fr-hint">主标签 = 标签列表中的第一个；副本仅存在于视图中，不复制文件</span>' +
+          '<span class="fr-hint">主标签 = 文件夹，次标签 = 其中的子文件夹；副本仅存在于视图中，不复制文件</span>' +
         '</div>' +
         (cards ? '<div class="folder-list">' + cards + '</div>'
           : '<div class="card reveal"><div class="empty"><b>' + (state.query ? '没有匹配的资料' : '还没有可归类的资料') + '</b>' +
-            '<p>' + (state.query ? '换个关键词，或清除筛选条件' : '导入资料并打上标签后，这里会自动为每个标签生成文件夹') + '</p></div></div>') +
+            '<p>' + (state.query ? '换个关键词，或清除筛选条件' : '导入资料并打上标签后，这里会自动为每个主标签生成文件夹') + '</p></div></div>') +
         (empty.length ? '<div class="empty-folders reveal"><span class="ef-label">空文件夹</span>' +
-          empty.map(function (t) { return tagChip(t.name, { act: 'tag-edit', id: t.id, count: 0 }); }).join('') +
-          '<span class="ef-note">标签尚未被使用</span></div>' : '');
+          empty.map(function (n) { return tagChip(n.main.name, { act: 'tag-edit', id: n.main.id, count: 0 }); }).join('') +
+          '<span class="ef-note">主标签尚未被使用</span></div>' : '');
     }
 
     return head + body +
@@ -739,13 +950,17 @@
       '</div>' +
 
       '<div class="section-title"><h2>核心主题</h2><span>点击查看该主题下的资料</span></div>' +
-      '<div class="topic-grid">' + core.map((t, i) =>
-        '<div class="topic reveal" data-act="topic" data-topic="' + esc(t.name) + '" style="animation-delay:' + Math.min(i * 26, 260) + 'ms">' +
-          '<div class="topic-head"><div><div class="topic-name"><i class="t-dot" style="background:' + tagColor(t.name) + '"></i>' + esc(t.name) + '</div>' +
+      '<div class="topic-grid">' + core.map(function (t, i) {
+        const tg = tagByName(t.name);
+        const pn = tg && tg.parentId ? ((tagById(tg.parentId) || {}).name || '') : '';
+        return '<div class="topic reveal" data-act="topic" data-topic="' + esc(t.name) + '" style="animation-delay:' + Math.min(i * 26, 260) + 'ms">' +
+          '<div class="topic-head"><div><div class="topic-name"><i class="t-dot" style="background:' + tagColor(t.name) + '"></i>' + esc(t.name) +
+            (pn ? '<em class="topic-parent">' + esc(pn) + '</em>' : '') + '</div>' +
           '<div class="topic-sub">' + t.count + ' 篇资料 · ' + (t.coverage >= 70 ? '结构完整' : t.coverage >= 40 ? '尚可扩展' : '较薄弱') + '</div></div>' +
           ring(t.coverage, tagColor(t.name)) + '</div>' +
           '<div class="kw-cloud">' + t.keywords.slice(0, 4).map((k) => '<span class="kw">' + esc(k) + '</span>').join('') + '</div>' +
-        '</div>').join('') +
+        '</div>';
+      }).join('') +
       '</div>' +
 
       (untagged ? '<div class="card reveal" style="margin-top:14px;display:flex;align-items:center;gap:12px">' +
@@ -771,73 +986,93 @@
 
   /* ---------------- 视图：标签管理 ---------------- */
   function viewTags() {
-    const tags = tagList().slice().sort(function (x, y) {
-      return tagUsage(y.name) - tagUsage(x.name) || x.name.localeCompare(y.name, 'zh-Hans-CN');
-    });
-    const used = tags.filter(function (t) { return tagUsage(t.name) > 0; });
-    const unused = tags.filter(function (t) { return tagUsage(t.name) === 0; });
-    const multi = state.docs.filter(function (d) { return (d.tags || []).length > 1; }).length;
-    const maxUse = Math.max.apply(null, tags.map(function (t) { return tagUsage(t.name); }).concat([1]));
+    const tree = tagTree();
+    const all = tagList();
+    const used = all.filter(function (t) { return tagUsage(t.name) > 0; });
+    const unused = all.filter(function (t) { return tagUsage(t.name) === 0; });
+    const mainCount = tree.length;
+    const subCount = all.length - mainCount;
+    const maxUse = Math.max.apply(null, tree.map(function (n) { return n.count; }).concat([1]));
 
-    if (!tags.length) {
+    if (!all.length) {
       return '<div class="card reveal" style="padding:0">' +
         '<div class="empty" style="padding:62px 24px 56px">' +
           '<svg viewBox="0 0 24 24" fill="none" style="width:42px;height:42px"><path d="M4.5 10.2V5.1c0-.4.3-.6.6-.6h5.1c.3 0 .5.1.7.3l8.4 8.4c.4.4.4 1 0 1.4l-5.1 5.1c-.4.4-1 .4-1.4 0L4.8 11c-.2-.2-.3-.4-.3-.8Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="8.2" cy="8.2" r="1.3" fill="currentColor"/></svg>' +
           '<b style="font-size:15px;color:var(--label)">还没有标签</b>' +
-          '<p style="margin-top:6px">新建标签后，资料库会自动为每个标签生成文件夹；给标签配色，全站的标签胶囊会同步换色。</p>' +
+          '<p style="margin-top:6px">主标签会生成资料库文件夹，次标签生成其中的子文件夹；给标签配色，全站胶囊同步换色。</p>' +
           '<div style="display:flex;gap:8px;justify-content:center;margin-top:18px">' +
-            '<button class="btn btn-primary" data-act="tag-new" style="justify-content:center">新建标签</button>' +
+            '<button class="btn btn-primary" data-act="tag-new" style="justify-content:center">新建主标签</button>' +
             (state.docs.length ? '<button class="btn btn-ghost" data-act="view" data-v="library">去整理资料</button>' : '<button class="btn btn-ghost" data-act="import-open">导入资料</button>') +
           '</div>' +
         '</div></div>';
     }
 
-    const rows = tags.map(function (t, i) {
+    function tagRowHtml(t, opt) {
+      opt = opt || {};
       const n = tagUsage(t.name);
-      const pct = Math.round((n / maxUse) * 100);
-      return '<div class="tag-row reveal" data-act="tag-edit" data-id="' + t.id + '" style="animation-delay:' + Math.min(i * 16, 180) + 'ms">' +
+      const folderN = t.parentId ? n : folderUsage(t);
+      const subs = t.parentId ? [] : subTagsOf(t.id);
+      const pct = Math.round((folderN / maxUse) * 100);
+      const subLine = t.parentId
+        ? '次标签 · 归属「' + esc(opt.parentName || '—') + '」 · ' + n + ' 篇资料'
+        : n + ' 篇资料' + (subs.length ? ' · ' + subs.length + ' 个次标签' : '') + (n || subs.length ? ' · 主文件夹已生成' : ' · 空文件夹') + ' · 修改于 ' + fmtDate(t.updatedAt);
+
+      return '<div class="tag-row' + (opt.sub ? ' is-sub' : '') + ' reveal" data-act="tag-edit" data-id="' + t.id + '"' +
+          ' style="animation-delay:' + Math.min((opt.delay || 0) * 16, 180) + 'ms">' +
+          (opt.sub ? '<span class="sub-rail"></span>' : '') +
           '<span class="tag-swatch" style="background:' + t.color + ';box-shadow:0 0 0 4px ' + hexA(t.color, 0.13) + '"></span>' +
           '<span class="tag-row-main">' +
-            '<span class="tag-row-name">' + esc(t.name) + (n === 0 ? '<em class="tag-row-badge">未使用</em>' : '') + '</span>' +
-            '<span class="tag-row-sub">' + n + ' 篇资料 · ' + (n ? n + ' 个文件夹' : '空文件夹') + ' · 修改于 ' + fmtDate(t.updatedAt) + '</span>' +
-            '<span class="tag-bar"><i style="width:' + Math.max(pct, n ? 4 : 0) + '%;background:' + t.color + '"></i></span>' +
+            '<span class="tag-row-name">' + esc(t.name) +
+              (t.parentId ? '<em class="tag-row-badge badge-sub">次</em>' : (subs.length ? '<em class="tag-row-badge badge-main">主</em>' : '')) +
+              (n === 0 && !subs.length ? '<em class="tag-row-badge">未使用</em>' : '') +
+            '</span>' +
+            '<span class="tag-row-sub">' + subLine + '</span>' +
+            '<span class="tag-bar"><i style="width:' + Math.max(pct, folderN ? 4 : 0) + '%;background:' + t.color + '"></i></span>' +
           '</span>' +
           '<span class="tag-row-side">' +
             (n ? '<button class="link-btn" data-act="open-tag-library" data-tag="' + esc(t.name) + '">查看</button>' : '') +
+            (t.parentId ? '' : '<button class="link-btn sub-add" data-act="tag-new-sub" data-parent="' + t.id + '">＋ 次标签</button>') +
             '<button class="tag-swatch-btn" data-act="tag-edit" data-id="' + t.id + '" aria-label="编辑标签">' +
               '<svg viewBox="0 0 24 24" fill="none"><path d="M4 20h4l10-10a2.1 2.1 0 0 0-3-3L5 17v3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m13.5 6.5 3 3" stroke="currentColor" stroke-width="1.6"/></svg>' +
             '</button>' +
           '</span>' +
         '</div>';
+    }
+
+    const rows = tree.map(function (node, i) {
+      return tagRowHtml(node.main, { delay: i }) +
+        node.subs.map(function (s) { return tagRowHtml(s, { sub: true, delay: i, parentName: node.main.name }); }).join('');
     }).join('');
 
     return '<div class="card tag-hero reveal">' +
         '<div class="tag-hero-main">' +
           '<div class="card-title" style="margin-bottom:6px">标签中心</div>' +
-          '<p class="tag-hero-desc">给标签配色后，资料行、标签胶囊、文件夹、主题卡与关联图都会使用同一颜色。重命名或删除标签时，资料库中的文件夹会同步更新。</p>' +
+          '<p class="tag-hero-desc">两级结构：<b>主标签</b>对应资料库里的一个文件夹，<b>次标签</b>是它下面的子文件夹。颜色会同步到资料行、文件夹、主题卡与关联图；改名或删除时，文件夹与子文件夹一并跟随。</p>' +
         '</div>' +
         '<div class="kit-row tag-hero-stats">' +
-          '<div class="stat-inline"><b>' + tags.length + '</b><span>标签总数</span></div>' +
+          '<div class="stat-inline"><b>' + mainCount + '</b><span>主标签</span></div>' +
+          '<div class="stat-inline"><b>' + subCount + '</b><span>次标签</span></div>' +
           '<div class="stat-inline"><b>' + used.length + '</b><span>使用中</span></div>' +
           '<div class="stat-inline"><b>' + unused.length + '</b><span>未使用</span></div>' +
-          '<div class="stat-inline"><b>' + multi + '</b><span>多标签资料</span></div>' +
         '</div>' +
         '<div class="kit-row tag-hero-acts">' +
-          '<button class="btn btn-sm btn-primary" data-act="tag-new">新建标签</button>' +
+          '<button class="btn btn-sm btn-primary" data-act="tag-new">新建主标签</button>' +
           (unused.length ? '<button class="btn btn-sm btn-ghost" data-act="cleanup-tags">清理 ' + unused.length + ' 个未使用标签</button>' : '') +
         '</div>' +
       '</div>' +
 
-      '<div class="section-title"><h2>全部标签</h2><span>点击任意标签可改名、换色或删除</span></div>' +
+      '<div class="section-title"><h2>全部标签</h2><span>点击任意标签可改名、换色、换层级或删除</span></div>' +
       '<div class="card tag-table reveal">' + rows + '</div>' +
 
       '<div class="card tag-rules reveal">' +
         '<div class="card-title">归类规则</div>' +
         '<ul class="rule-list">' +
-          '<li><b>一个标签一个文件夹</b>：资料库按标签自动归类，没有标签的资料进入「未归类」。</li>' +
-          '<li><b>多标签资料</b>：默认同时出现在每个所属标签的文件夹中（只是视图复用，不复制文件）；可在资料库切换为「只归入主标签」，按标签列表第一项归档。</li>' +
-          '<li><b>重命名</b>：所有关联资料的标签与文件夹名称同步更新，历史筛选条件一并迁移。</li>' +
-          '<li><b>删除</b>：只解除标签与资料的关联，对应文件夹消失，资料本身不会被删除。</li>' +
+          '<li><b>两层结构</b>：主标签（<code>parentId = null</code>）→ 次标签（<code>parentId</code> 指向主标签）。次标签下不能再挂标签。</li>' +
+          '<li><b>文件夹映射</b>：主标签 → <code>资料库/主标签</code>；次标签 → <code>资料库/主标签/次标签</code>。给资料只打次标签时，也会自动出现在对应主文件夹里。</li>' +
+          '<li><b>主文件夹根层</b>：只打了主标签、没有打任何次标签的资料，显示在「未归入次标签」分组。</li>' +
+          '<li><b>多标签资料</b>：默认同时出现在每个所属标签的文件夹中（只是视图复用，不复制文件）；切换为「只归入第一个标签」后，按其标签列表第一项归档。</li>' +
+          '<li><b>重命名</b>：主标签改名 → 文件夹改名，所有次标签的归属与资料不变；次标签改名 → 只改子文件夹名。</li>' +
+          '<li><b>删除</b>：次标签只解除关联；删除主标签时可选择「把次标签升为主标签」或「连带删除次标签」，资料本身始终保留。</li>' +
         '</ul>' +
       '</div>';
   }
@@ -1179,9 +1414,12 @@
     ensureAnalysis();
     const v = VIEWS[state.view] || VIEWS.overview;
     $('#viewTitle').textContent = v.title;
+    const mains = mainTags().length;
     $('#viewSub').textContent = state.view === 'library'
-      ? '共 ' + state.docs.length + ' 篇 · ' + tagList().length + ' 个标签'
-      : (state.view === 'tags' ? '共 ' + tagList().length + ' 个标签 · 颜色与文件夹统一管理' : v.sub);
+      ? '共 ' + state.docs.length + ' 篇 · ' + mains + ' 个主标签 · ' + (tagList().length - mains) + ' 个次标签'
+      : (state.view === 'tags'
+        ? mains + ' 个主标签 · ' + (tagList().length - mains) + ' 个次标签 · 颜色与文件夹统一管理'
+        : v.sub);
     $('#content').innerHTML = v.render();
     updateChrome();
     afterRender();
@@ -1387,7 +1625,10 @@
     if (!d || !d.tags || !d.tags.length) return '<span class="muted" style="font-size:12px">还没有标签</span>';
     return d.tags.map(function (t) {
       const c = tagColor(t);
-      return '<span class="chip tg-chip" style="background:' + hexA(c, 0.11) + ';color:' + shade(c, 0.14) + '">' +
+      const tag = tagByName(t);
+      const parent = tag && tag.parentId ? ((tagById(tag.parentId) || {}).name || '') : '';
+      return '<span class="chip tg-chip' + (parent ? ' is-sub' : '') + '" title="' + esc(parent ? parent + ' / ' + t : t) + '"' +
+        ' style="background:' + hexA(c, 0.11) + ';color:' + shade(c, 0.14) + '">' +
         '<i class="tg-dot" style="background:' + c + '"></i>' + esc(t) +
         '<button data-act="tag-remove" data-id="' + d.id + '" data-tag="' + esc(t) + '" aria-label="移除标签" style="color:' + shade(c, 0.14) + '">×</button></span>';
     }).join('');
@@ -1408,9 +1649,16 @@
     const q = inputName.toLowerCase();
     const own = d.tags || [];
     const uses = tagUsageMap();
-    const list = tagList().slice().sort(function (a, b) {
-      return (uses[b.name] || 0) - (uses[a.name] || 0) || a.name.localeCompare(b.name, 'zh-Hans-CN');
-    });
+    /* 主标签在前、其次标签紧随其后，便于看出层级 */
+    const list = [];
+    mainTags().map(function (m) { return { t: m, n: folderUsage(m) }; })
+      .sort(function (a, b) { return b.n - a.n || a.t.name.localeCompare(b.t.name, 'zh-Hans-CN'); })
+      .forEach(function (node) {
+        list.push(node.t);
+        subTagsOf(node.t.id).slice()
+          .sort(function (x, y) { return (uses[y.name] || 0) - (uses[x.name] || 0) || x.name.localeCompare(y.name, 'zh-Hans-CN'); })
+          .forEach(function (s) { list.push(s); });
+      });
     const avail = list.filter(function (t) {
       return own.indexOf(t.name) < 0 && (!q || t.name.toLowerCase().indexOf(q) >= 0);
     });
@@ -1419,9 +1667,11 @@
 
     if (avail.length) {
       html += avail.slice(0, 40).map(function (t) {
-        return '<button type="button" class="tp-item" data-act="tag-pick" data-id="' + d.id + '" data-tag="' + esc(t.name) + '">' +
+        const parent = t.parentId ? (tagById(t.parentId) || {}).name : '';
+        return '<button type="button" class="tp-item' + (t.parentId ? ' is-sub' : '') + '" data-act="tag-pick" data-id="' + d.id + '" data-tag="' + esc(t.name) + '">' +
           '<i class="tg-dot" style="background:' + t.color + '"></i>' +
           '<span class="tp-name">' + esc(t.name) + '</span>' +
+          (parent ? '<span class="tp-parent">' + esc(parent) + '</span>' : '') +
           '<span class="tp-use">' + (uses[t.name] || 0) + ' 篇</span></button>';
       }).join('');
     } else if (!list.length) {
@@ -1436,6 +1686,18 @@
         '<span class="tp-plus">＋</span>' +
         '<span class="tp-name">创建「' + esc(inputName) + '」</span>' +
         '<i class="tg-dot" style="background:' + pickTagColor() + '"></i></button>';
+
+      /* 这份资料已有主标签时，顺手给出「作为其次标签创建」的入口 */
+      const ownTags = own.map(function (n) { return tagByName(n); }).filter(Boolean);
+      const docMain = ownTags.filter(function (t) { return !t.parentId; })[0] ||
+        (ownTags.filter(function (t) { return t.parentId; })[0] ? tagById(ownTags.filter(function (t) { return t.parentId; })[0].parentId) : null);
+      if (docMain) {
+        html += '<button type="button" class="tp-item tp-create" data-act="tag-pick-sub" data-id="' + d.id +
+          '" data-parent="' + docMain.id + '" data-tag="' + esc(inputName) + '">' +
+          '<span class="tp-plus">＋</span>' +
+          '<span class="tp-name">在「' + esc(docMain.name) + '」下创建次标签</span>' +
+          '<i class="tg-dot" style="background:' + docMain.color + '"></i></button>';
+      }
     }
     return html;
   }
@@ -1737,19 +1999,54 @@
   }
 
   /* ---------------- 标签编辑面板 ---------------- */
-  function openTagSheet(id) {
+  function openTagSheet(id, opts) {
+    opts = opts || {};
     const isNew = !id;
     const t = isNew ? null : tagById(id);
     if (!isNew && !t) return;
     const usage = t ? tagUsage(t.name) : 0;
-    const color = t ? t.color : pickTagColor();
+    const color = t ? t.color : (opts.parentId ? (tagById(opts.parentId) || {}).color : pickTagColor()) || pickTagColor();
     const name = t ? t.name : '';
+    const subs = t ? subTagsOf(t.id) : [];
+    const mains = mainTags().filter(function (m) { return !t || m.id !== t.id; });
+    const startParentId = t ? (t.parentId || '') : (opts.parentId || '');
+    const lockLevel = subs.length > 0;      /* 有次标签的主标签不能再降为次标签 */
+    const canSub = !lockLevel && mains.length > 0;
+    const startLevel = startParentId ? 'sub' : 'main';
+
+    const levelSelect =
+      '<select class="input select" id="tagLevelSelect">' +
+        '<option value="main"' + (startLevel === 'main' ? ' selected' : '') + '>主标签 · 生成资料库文件夹</option>' +
+        '<option value="sub"' + (startLevel === 'sub' ? ' selected' : '') + (canSub ? '' : ' disabled') + '>次标签 · 放进主标签文件夹内</option>' +
+      '</select>';
+
+    const parentSelect =
+      '<div class="field" id="tagParentField"' + (startLevel === 'sub' ? '' : ' hidden') + '>' +
+        '<label>归属的主标签</label>' +
+        '<select class="input select" id="tagParentSelect">' +
+          mains.map(function (m) {
+            return '<option value="' + m.id + '"' + (m.id === startParentId ? ' selected' : '') + '>' + esc(m.name) + '</option>';
+          }).join('') +
+        '</select>' +
+        '<div class="hint">文件夹路径：资料库 / 主标签 / 次标签</div>' +
+      '</div>';
 
     const body =
       '<div class="field"><label>标签名称</label>' +
-        '<input class="input" id="tagNameInput" maxlength="20" autocomplete="off" placeholder="例如：通货膨胀" value="' + esc(name) + '">' +
-        '<div class="hint">最多 20 字；逗号与 # 会被自动去掉。</div>' +
+        '<input class="input" id="tagNameInput" maxlength="20" autocomplete="off" placeholder="例如：索洛模型" value="' + esc(name) + '">' +
+        '<div class="hint">最多 20 字；逗号与 # 会被自动去掉；名称在全部标签中唯一。</div>' +
       '</div>' +
+
+      '<div class="sheet-section-title">层级归属</div>' +
+      levelSelect +
+      (canSub ? '' : '<div class="hint" style="margin-top:5px">' +
+        (lockLevel ? '该主标签下已有次标签，不能再改为次标签（最多两级）。' : '还没有其它主标签可作为归属，先创建一个主标签。') + '</div>') +
+      parentSelect +
+      '<div class="path-preview" id="tagPathPreview"></div>' +
+      (t && !t.parentId
+        ? '<button class="link-btn" style="margin-top:8px" data-act="tag-new-sub" data-parent="' + t.id + '">＋ 在此标签下新建次标签</button>'
+        : '') +
+
       '<div class="sheet-section-title">标签颜色</div>' +
       '<div class="color-grid" id="tagColorGrid" data-color="' + color + '">' +
         TAG_COLORS.map((c) => '<button class="color-dot' + (c === color ? ' active' : '') + '" data-color="' + c +
@@ -1761,20 +2058,33 @@
           '<i class="tg-dot" style="background:' + color + '"></i><span>' + esc(name || '标签预览') + '</span></span>' +
         '<span class="hint">颜色同步到资料行、文件夹、主题卡与关联图</span>' +
       '</div>' +
+
+      (subs.length ? '<div class="sheet-section-title" style="justify-content:space-between;gap:10px">次标签 · ' + subs.length +
+          '<button class="link-btn" data-act="tag-new-sub" data-parent="' + t.id + '">＋ 新建</button></div>' +
+        '<div class="subtag-list">' + subs.map(function (s) {
+          return '<button class="subtag-item" data-act="tag-edit" data-id="' + s.id + '">' +
+            '<i class="tg-dot" style="background:' + s.color + '"></i>' +
+            '<span>' + esc(s.name) + '</span>' +
+            '<em>' + tagUsage(s.name) + ' 篇</em></button>';
+        }).join('') + '</div>' : '') +
+
       (isNew ? '' :
         '<div class="sheet-section-title">使用情况</div>' +
         '<div class="kv">' +
           '<div><span>关联资料</span><b>' + usage + ' 篇</b></div>' +
-          '<div><span>资料库文件夹</span><b>' + (usage ? '已生成' : '空文件夹') + '</b></div>' +
+          '<div><span>' + (t.parentId ? '所在子文件夹' : '资料库文件夹') + '</span><b>' +
+            esc(t.parentId ? ((tagParent(t) || {}).name || '—') + ' / ' + t.name : t.name) + '</b></div>' +
           '<div><span>创建时间</span><b>' + fmtDate(t.createdAt) + '</b></div>' +
           '<div><span>最近修改</span><b>' + fmtDate(t.updatedAt) + '</b></div>' +
         '</div>' +
-        '<p class="hint" style="margin-top:10px">重命名后，' + usage + ' 篇资料的标签与对应文件夹会立即同步。</p>');
+        '<p class="hint" style="margin-top:10px">重命名后，' + usage + ' 篇资料的标签与对应' + (t.parentId ? '子文件夹' : '文件夹') + '会立即同步。</p>');
 
     openSheet({
-      eyebrow: isNew ? '新建标签' : '标签设置',
-      title: isNew ? '新建一个标签' : esc(t.name),
-      meta: '<span>' + (isNew ? '创建后资料库会自动生成对应文件夹' : usage + ' 篇资料 · ' + usage + ' 个文件夹') + '</span>',
+      eyebrow: isNew ? (opts.parentId ? '新建次标签' : '新建主标签') : '标签设置',
+      title: isNew ? (opts.parentId ? '在主标签下新建次标签' : '新建一个主标签') : esc(t.name),
+      meta: '<span>' + (isNew
+        ? (opts.parentId ? '归属「' + esc((tagById(opts.parentId) || {}).name || '') + '」' : '创建后资料库会自动生成对应文件夹')
+        : usage + ' 篇资料 · ' + (t.parentId ? '次标签' : '主标签')) + '</span>',
       body: body,
       footer: (isNew
           ? '<button class="btn btn-sm" data-act="close-sheet">取消</button>'
@@ -1787,6 +2097,21 @@
         const preview = $('#tagPreview', root);
         const nameInput = $('#tagNameInput', root);
         const custom = $('#tagCustomColor', root);
+        const level = $('#tagLevelSelect', root);
+        const parentField = $('#tagParentField', root);
+        const parentSel = $('#tagParentSelect', root);
+        const pathEl = $('#tagPathPreview', root);
+
+        const syncLevel = function () {
+          const isSub = level && level.value === 'sub';
+          if (parentField) parentField.hidden = !isSub;
+          if (pathEl) {
+            const pname = isSub && parentSel && tagById(parentSel.value) ? tagById(parentSel.value).name : '';
+            const label = (nameInput && nameInput.value.trim()) || '新标签';
+            pathEl.innerHTML = '<span>文件夹路径</span><b>资料库' +
+              (isSub ? ' / ' + esc(pname || '选择主标签') : '') + ' / ' + esc(label) + '</b>';
+          }
+        };
 
         const paint = function (c) {
           if (preview) {
@@ -1816,10 +2141,13 @@
             paint(c);
           });
         }
+        if (level) level.addEventListener('change', syncLevel);
+        if (parentSel) parentSel.addEventListener('change', syncLevel);
         if (nameInput) {
           nameInput.addEventListener('input', function () {
             const label = preview && preview.querySelector('span:last-child');
             if (label) label.textContent = nameInput.value.trim() || '标签预览';
+            syncLevel();
           });
           nameInput.addEventListener('keydown', function (e) {
             if (e.key !== 'Enter') return;
@@ -1829,6 +2157,7 @@
           });
           setTimeout(function () { nameInput.focus(); nameInput.select(); }, 140);
         }
+        syncLevel();
       }
     });
   }
@@ -1894,21 +2223,29 @@
     toast('已移除标签「' + tag + '」');
   }
 
-  /* 保存标签：新建 / 改名 / 改色；改名会同步所有资料、筛选与折叠状态 */
-  function saveTag(id, rawName, color) {
+  /* 保存标签：新建 / 改名 / 改色 / 调整层级
+     改名会同步所有资料与筛选；层级只用 id 引用，改名不影响父子关系 */
+  function saveTag(id, rawName, color, parentId) {
     const name = cleanTagName(rawName);
     if (!name) { toast('标签名称不能为空'); return false; }
     const now = new Date().toISOString();
     const safeColor = /^#[0-9a-f]{6}$/i.test(color || '') ? color : pickTagColor();
+    const parent = parentId ? tagById(parentId) : null;
+
+    if (parentId && !parent) { toast('归属的主标签不存在'); return false; }
+    if (parent && parent.parentId) { toast('次标签下不能再挂次标签（最多两级）'); return false; }
 
     if (!id) {
       const exist = tagByName(name);
       if (exist) { toast('已有同名标签「' + name + '」，直接使用即可'); return false; }
-      tagList().push({ id: tagId(), name: name, color: safeColor, createdAt: now, updatedAt: now });
+      tagList().push({
+        id: tagId(), name: name, color: safeColor, parentId: parent ? parent.id : null,
+        createdAt: now, updatedAt: now
+      });
       recompute();
       save();
       render();
-      toast('已创建标签「' + name + '」', 'check');
+      toast(parent ? '已在「' + parent.name + '」下创建次标签「' + name + '」' : '已创建主标签「' + name + '」', 'check');
       return true;
     }
 
@@ -1917,52 +2254,125 @@
     const oldName = t.name;
     const target = tagByName(name);
     if (target && target.id !== t.id) { toast('已有同名标签「' + name + '」，请换一个名称'); return false; }
+    if (parent && parent.id === t.id) { toast('标签不能归属自己'); return false; }
+    if (parent && subTagsOf(t.id).length) {
+      toast('该主标签下还有 ' + subTagsOf(t.id).length + ' 个次标签，不能改为次标签');
+      return false;
+    }
 
     if (name !== oldName) {
       state.docs.forEach(function (d) {
         d.tags = (d.tags || []).map(function (x) { return x === oldName ? name : x; });
       });
       state.activeTags = state.activeTags.map(function (x) { return x === oldName ? name : x; });
-      state.closedFolders = state.closedFolders.map(function (x) { return x === oldName ? name : x; });
     }
+    const levelChanged = (t.parentId || null) !== (parent ? parent.id : null);
     t.name = name;
     t.color = safeColor;
+    t.parentId = parent ? parent.id : null;
     t.updatedAt = now;
 
     recompute();
     save();
     render();
-    toast(name !== oldName
-      ? '已重命名为「' + name + '」，' + tagUsage(name) + ' 篇资料与文件夹同步更新'
-      : '标签「' + name + '」已更新', 'check');
+    if (name !== oldName) toast('已重命名为「' + name + '」，' + tagUsage(name) + ' 篇资料与文件夹同步更新', 'check');
+    else if (levelChanged) toast(parent ? '已移入「' + parent.name + '」的子文件夹' : '已升级为主标签文件夹', 'check');
+    else toast('标签「' + name + '」已更新', 'check');
     return true;
+  }
+
+  /* 三选一确认：返回所选值，取消返回 false */
+  function choiceSheet(parts) {
+    return new Promise(function (resolve) {
+      let settled = false;
+      const done = function (v) {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener('click', handler, true);
+        resolve(v);
+      };
+      const handler = function (e) {
+        const btn = e.target.closest('[data-act]');
+        if (!btn) return;
+        const act = btn.getAttribute('data-act');
+        if (act === 'choice') { done(btn.getAttribute('data-choice')); closeSheet(); }
+        else if (act === 'close-sheet' || btn.classList.contains('sheet-backdrop')) done(false);
+      };
+      openSheet({
+        eyebrow: parts.eyebrow || '请确认',
+        title: parts.title,
+        body: '<p style="margin:0;font-size:13px;color:var(--label-2);line-height:1.7">' + parts.body + '</p>',
+        footer: '<button class="btn btn-sm" data-act="close-sheet">取消</button>' +
+          '<div class="group">' + parts.actions + '</div>'
+      });
+      document.addEventListener('click', handler, true);
+    });
   }
 
   async function deleteTag(id) {
     const t = tagById(id);
-    if (!t) return;
+    if (!t) return false;
+    const subs = subTagsOf(t.id);
     const n = tagUsage(t.name);
-    const ok = await confirmSheet('删除标签「' + t.name + '」？',
-      n
-        ? '该标签会从 ' + n + ' 篇资料上解除，资料库里的对应文件夹随之消失。资料本身不会被删除。'
-        : '这个标签还没有被任何资料使用，删除不会影响资料。', '删除标签');
-    if (!ok) return false;
-    state.docs.forEach(function (d) {
-      d.tags = (d.tags || []).filter(function (x) { return x !== t.name; });
+    const subNames = subs.map(function (s) { return s.name; });
+
+    if (!subs.length) {
+      const ok = await confirmSheet('删除标签「' + t.name + '」？',
+        n
+          ? '该标签会从 ' + n + ' 篇资料上解除，资料库里的对应' + (t.parentId ? '子文件夹' : '文件夹') + '随之消失。资料本身不会被删除。'
+          : '这个标签还没有被任何资料使用，删除不会影响资料。', '删除标签');
+      if (!ok) return false;
+      return finishDeleteTag(t, [], '');
+    }
+
+    const choice = await choiceSheet({
+      title: '删除主标签「' + t.name + '」？',
+      body: '它下面还有 <b>' + subs.length + '</b> 个次标签（' + esc(subNames.slice(0, 4).join('、')) +
+        (subs.length > 4 ? ' 等' : '') + '）。删除主标签会同时解除 ' + n + ' 篇资料上的这个标签，资料本身不会被删除。' +
+        '<ul class="choice-list">' +
+          '<li><b>次标签升为主标签</b><span>保留次标签与它们的资料，变成并列的主文件夹。</span></li>' +
+          '<li><b>连同次标签一起删除</b><span>次标签一并移除，相关资料上的这些标签同时解除。</span></li>' +
+        '</ul>',
+      actions: '<button class="btn btn-sm" data-act="choice" data-choice="promote">次标签升为主标签</button>' +
+        '<button class="btn btn-sm" data-act="choice" data-choice="cascade" style="background:#ff3b30;color:#fff">连同次标签删除</button>'
     });
-    state.tags = tagList().filter(function (x) { return x.id !== id; });
-    state.activeTags = state.activeTags.filter(function (x) { return x !== t.name; });
-    state.closedFolders = state.closedFolders.filter(function (x) { return x !== t.name; });
+    if (!choice) return false;
+    return finishDeleteTag(t, subs, choice);
+  }
+
+  /* mode: '' 普通删除；'promote' 次标签升级；'cascade' 级联删除 */
+  function finishDeleteTag(t, subs, mode) {
+    const now = new Date().toISOString();
+    if (mode === 'promote') {
+      subs.forEach(function (s) { s.parentId = null; s.updatedAt = now; });
+    }
+    const kill = [t.name].concat(mode === 'cascade' ? subs.map(function (s) { return s.name; }) : []);
+    state.docs.forEach(function (d) {
+      d.tags = (d.tags || []).filter(function (x) { return kill.indexOf(x) < 0; });
+    });
+    state.tags = tagList().filter(function (x) { return kill.indexOf(x.name) < 0; });
+    /* 兜底：父标签已不存在的次标签自动升级，避免出现孤儿层级 */
+    state.tags.forEach(function (x) {
+      if (x.parentId && !tagById(x.parentId)) x.parentId = null;
+    });
+    state.activeTags = state.activeTags.filter(function (x) { return kill.indexOf(x) < 0; });
+    state.closedFolders = state.closedFolders.filter(function (k) { return !!tagById(k); });
+
     recompute();
     save();
     render();
-    toast('已删除标签「' + t.name + '」');
+    if (mode === 'promote') toast('已删除「' + t.name + '」，' + subs.length + ' 个次标签已升为主标签');
+    else if (mode === 'cascade') toast('已删除「' + t.name + '」及其 ' + subs.length + ' 个次标签');
+    else toast('已删除标签「' + t.name + '」');
     return true;
   }
 
   async function cleanupTags() {
-    const unused = tagList().filter(function (t) { return tagUsage(t.name) === 0; });
-    if (!unused.length) { toast('没有未使用的标签'); return; }
+    /* 有次标签的主标签不算「孤立」，避免清理后子标签失去归属 */
+    const unused = tagList().filter(function (t) {
+      return tagUsage(t.name) === 0 && (!t.parentId ? subTagsOf(t.id).length === 0 : true);
+    });
+    if (!unused.length) { toast('没有可清理的标签'); return; }
     const ok = await confirmSheet('清理未使用的标签？',
       '将删除 ' + unused.length + ' 个没有任何资料的标签：' + unused.slice(0, 6).map(function (t) { return t.name; }).join('、') +
       (unused.length > 6 ? ' 等' : '') + '。此操作不影响资料。', '清理');
@@ -2274,9 +2684,10 @@
       case 'library-mode': state.libraryMode = btn.getAttribute('data-mode') === 'list' ? 'list' : 'folder'; save(); render(); break;
       case 'folder-rule': state.folderRule = btn.getAttribute('data-rule') === 'primary' ? 'primary' : 'all'; save(); render(); break;
       case 'toggle-folder': {
-        const name = btn.getAttribute('data-tag');
-        const i = state.closedFolders.indexOf(name);
-        if (i >= 0) state.closedFolders.splice(i, 1); else state.closedFolders.push(name);
+        const key = btn.getAttribute('data-id');
+        if (!key) break;
+        const i = state.closedFolders.indexOf(key);
+        if (i >= 0) state.closedFolders.splice(i, 1); else state.closedFolders.push(key);
         save(); render(); break;
       }
       case 'open-tag-library': {
@@ -2293,10 +2704,24 @@
         $('#scrollArea').scrollTop = 0;
         save(); render(); break;
       case 'tag-new': openTagSheet(); break;
+      case 'tag-new-sub': openTagSheet('', { parentId: btn.getAttribute('data-parent') }); break;
       case 'tag-toggle': if (pickerApi) pickerApi.toggle(); break;
       case 'tag-pick': {
         const id = btn.getAttribute('data-id');
         const name = btn.getAttribute('data-tag');
+        const input = $('#tagAddInput');
+        if (addTag(id, name)) {
+          if (input) { input.value = ''; input.focus(); }
+          if (pickerApi) pickerApi.open();
+        }
+        break;
+      }
+      case 'tag-pick-sub': {
+        const id = btn.getAttribute('data-id');
+        const name = btn.getAttribute('data-tag');
+        const parent = tagById(btn.getAttribute('data-parent'));
+        if (!parent) break;
+        if (!tagByName(name)) ensureTag(name, parent.color, parent.id);
         const input = $('#tagAddInput');
         if (addTag(id, name)) {
           if (input) { input.value = ''; input.focus(); }
@@ -2310,7 +2735,10 @@
         const nameEl = $('#tagNameInput');
         const grid = $('#tagColorGrid');
         if (!nameEl || !grid) break;
-        const done = saveTag(btn.getAttribute('data-id') || '', nameEl.value, grid.getAttribute('data-color'));
+        const levelEl = $('#tagLevelSelect');
+        const parentEl = $('#tagParentSelect');
+        const parentId = levelEl && levelEl.value === 'sub' && parentEl ? parentEl.value : '';
+        const done = saveTag(btn.getAttribute('data-id') || '', nameEl.value, grid.getAttribute('data-color'), parentId);
         if (done) closeSheet();
         break;
       }

@@ -167,10 +167,18 @@ window.Engine = (function () {
   const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 
   /* ---------------- 主分析 ---------------- */
-  function analyze(docs) {
+  function analyze(docs, tags) {
     const N = Math.max(1, docs.length);
     const extracted = {};
     const df = Object.create(null);
+
+    /* 次标签 → 主标签：主主题聚合时把子标签下的资料一并算进去 */
+    const parentOf = Object.create(null);
+    (tags || []).forEach(function (t) {
+      if (!t || !t.parentId) return;
+      const p = (tags || []).filter(function (x) { return x.id === t.parentId; })[0];
+      if (p && !p.parentId) parentOf[t.name] = p.name;
+    });
 
     docs.forEach(function (d) {
       const ex = extractTerms(d.title + '。' + (d.tags || []).join('。') + '。' + d.content);
@@ -237,10 +245,16 @@ window.Engine = (function () {
       ins.importance = Math.round(clamp(lengthScore + kwScore + linkScore + recency, 12, 99));
     });
 
-    /* 4) 主题（标签聚合） */
+    /* 4) 主题（标签聚合，次标签同时计入其主标签） */
     const tagMap = Object.create(null);
     docs.forEach(function (d) {
+      const names = [];
       (d.tags && d.tags.length ? d.tags : ['未归类']).forEach(function (t) {
+        if (names.indexOf(t) < 0) names.push(t);
+        const p = parentOf[t];
+        if (p && names.indexOf(p) < 0) names.push(p);
+      });
+      names.forEach(function (t) {
         if (!tagMap[t]) tagMap[t] = { name: t, docs: [], types: new Set(), recent: 0, keywords: Object.create(null) };
         const g = tagMap[t];
         g.docs.push(d.id);

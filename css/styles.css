@@ -1094,7 +1094,7 @@ button.tag:active{ transform: scale(.96); }
 
 /* ============ 资料详情：摘要与正文状态 ============ */
 .doc-sum{
-  display:block; margin-top:3px;
+  display:block; max-width:100%; margin-top:3px;
   font-size:11.5px; line-height:1.55; color: var(--label-2);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
@@ -1161,4 +1161,121 @@ button.tag:active{ transform: scale(.96); }
 @media (max-width: 560px){
   .tag-picker{ max-height: 180px; }
   .doc-sum{ font-size:11px; }
+}
+
+/* ============ 资料库：主标签文件夹 / 次标签子文件夹 ============ */
+.folder-badge{
+  font-size:9.5px; font-weight:600; color: var(--label-3);
+  background: var(--fill); padding:1px 7px; border-radius:99px; flex:0 0 auto;
+}
+.folder-main > .folder-body{ padding-bottom: 6px; }
+
+.subfolder{ margin: 0 0 1px 18px; padding-left: 12px; position: relative; }
+.subfolder::before{
+  content:''; position:absolute; left:0; top:1px; bottom:1px; width:1px;
+  background: rgba(60,60,67,.13); border-radius:99px;
+}
+.subfolder-head{ display:flex; align-items:center; gap:6px; padding: 2px 0; }
+.subfolder-toggle{
+  display:flex; align-items:center; gap:8px; flex:1; min-width:0;
+  padding: 5px 6px; margin-left:-6px; border-radius:9px; text-align:left;
+}
+.subfolder-toggle:hover{ background: var(--bg-soft); }
+.subfolder-line{ display:none; }
+.subfolder-ico{
+  width:24px; height:24px; border-radius:8px; flex:0 0 24px;
+  display:grid; place-items:center;
+}
+.subfolder-ico svg{ width:14px; height:14px; }
+.subfolder-name{
+  font-size:12.5px; font-weight:600; letter-spacing:-.005em; color: var(--label);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.subfolder-body{ padding-left: 2px; }
+.subfolder.is-closed .subfolder-body{ display:none; }
+.subfolder.is-closed .folder-chev{ transform: rotate(-90deg); }
+.subfolder.is-empty{ opacity:.75; }
+.subfolder .doc{ border-radius: 10px; }
+
+.root-group{ margin: 6px 0 2px; }
+.root-label{
+  display:block; padding: 4px 8px 3px;
+  font-size:10px; font-weight:650; letter-spacing:.05em; text-transform:uppercase;
+  color: var(--label-3);
+}
+
+/* ============ 标签中心：层级 ============ */
+.tag-row.is-sub{ padding-left: 34px; position: relative; }
+.tag-row.is-sub .sub-rail{
+  position:absolute; left:16px; top:50%; width:10px; height:1px;
+  background: rgba(60,60,67,.20);
+}
+.tag-row.is-sub .tag-swatch{ width:9px; height:9px; flex:0 0 9px; box-shadow:none !important; }
+.tag-row.is-sub .tag-row-name{ font-size:12.5px; font-weight:560; }
+.tag-row-badge.badge-main{ background: rgba(10,132,255,.10); color:#0b6fd6; }
+.tag-row-badge.badge-sub{ background: rgba(120,120,128,.13); color: var(--label-2); }
+
+.subtag-list{ display:flex; flex-wrap:wrap; gap:6px; }
+.subtag-item{
+  display:inline-flex; align-items:center; gap:6px;
+  padding: 5px 10px; border-radius:9px; background: var(--bg-soft);
+  font-size:12px; font-weight:540; color: var(--label);
+  transition: background .18s var(--ease), transform .2s var(--spring);
+}
+.subtag-item:hover{ background: rgba(120,120,128,.14); }
+.subtag-item:active{ transform: scale(.97); }
+.subtag-item em{ font-style:normal; font-size:10.5px; color: var(--label-3); }
+
+/* ============ 标签编辑：层级与路径 ============ */
+.input.select{
+  appearance:none; -webkit-appearance:none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='m7 10 5 5 5-5' stroke='%2393959d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat; background-position: right 10px center; background-size: 13px;
+  padding-right: 30px; cursor:pointer;
+}
+.path-preview{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  margin: 4px 0 2px; padding: 7px 10px; border-radius:9px;
+  background: var(--bg-soft); font-size:11.5px; color: var(--label-3);
+}
+.path-preview b{ color: var(--label-2); font-weight:600; }
+
+/* 次标签胶囊与选择器 */
+.tp-parent{
+  font-size:10px; color: var(--label-3); background: var(--fill);
+  padding: 1px 5px; border-radius:5px; flex:0 0 auto;
+  max-width: 90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.tp-item.is-sub{ padding-left: 16px; }
+.tag.tg.tg-sub::before{ content:'›'; opacity:.45; font-weight:700; margin-right:-1px; }
+
+@media (max-width: 560px){
+  .subfolder{ margin-left: 10px; padding-left: 9px; }
+  .tag-row.is-sub{ padding-left: 24px; }
+  .tag-row.is-sub .sub-rail{ left: 10px; width: 8px; }
+  .folder-badge{ display:none; }
+}
+.tg-chip.is-sub::before{ content:'›'; opacity:.4; font-weight:700; margin-right:-2px; }
+.choice-list{ list-style:none; margin:12px 0 0; padding:0; }
+.choice-list li + li{ margin-top:9px; }
+.choice-list b{ display:block; font-size:12.5px; font-weight:620; color: var(--label); }
+.choice-list span{ display:block; font-size:11.5px; color: var(--label-3); line-height:1.6; margin-top:1px; }
+/* 摘要行让资料卡变高：图标与标题顶部对齐，箭头保持垂直居中 */
+.doc .doc-ico{ align-self:flex-start; }
+.doc .doc-right{ align-self:center; }
+.rule-list code{
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px; background: rgba(120,120,128,.13);
+  padding: 1px 5px; border-radius: 5px; color: var(--label-2);
+}
+.topic-parent{
+  font-style:normal; font-size:9.5px; font-weight:600; color: var(--label-3);
+  background: var(--fill); padding: 1px 6px; border-radius: 5px; margin-left: 2px;
+}
+@media (max-width: 560px){
+  .section-title h2{ white-space: nowrap; }
+  .section-title span{ font-size: 10.5px; line-height: 1.45; }
+}
+@media (max-width: 860px){
+  .tag-row-side .link-btn.sub-add{ display:inline; }
 }

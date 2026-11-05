@@ -174,6 +174,12 @@
       folderRule: 'all',
       closedFolders: [],
       sort: 'recent',
+      topicsTab: 'topics',
+      conceptFilter: 'all',
+      graphMode: 'concept',
+      graphCoreOnly: false,
+      graphFocus: null,
+      graphSeed: 0,
       analysisTab: 'summary',
       privacy: false,
       autoBackup: true,
@@ -212,7 +218,8 @@
   }
 
   function ensureAnalysis() {
-    if (!state.analysis || !state.analysis.insights) recompute();
+    /* 旧版本存档没有 concepts 字段，加载时补算一次 */
+    if (!state.analysis || !state.analysis.insights || !state.analysis.concepts) recompute();
     return state.analysis;
   }
 
@@ -927,10 +934,29 @@
       '</div>';
   }
 
-  /* ---------------- 视图：知识主题 ---------------- */
+  /* ---------------- 视图：知识主题 / 关键概念 ---------------- */
   function viewTopics() {
     if (!state.docs.length) return emptyLibrary();
     const a = ensureAnalysis();
+    const tab = state.topicsTab === 'concepts' ? 'concepts' : 'topics';
+    const concepts = a.concepts || [];
+    const coreN = concepts.filter(function (c) { return c.band === 'core'; }).length;
+
+    const head = '<div class="seg-row" style="margin-bottom:14px">' +
+        '<div class="segmented" data-seg="topicsTab"><span class="seg-ind"></span>' +
+          [['topics', '主题结构'], ['concepts', '关键概念']].map(function (x) {
+            return '<button data-act="topics-tab" data-tab="' + x[0] + '" class="' + (tab === x[0] ? 'active' : '') + '">' + x[1] + '</button>';
+          }).join('') +
+        '</div>' +
+        '<span class="count-label">' + (tab === 'concepts'
+          ? concepts.length + ' 个概念 · ' + coreN + ' 个核心 · ' + (a.conceptEdges || []).length + ' 条共现'
+          : (a.coreTopics || []).length + ' 个核心主题 · ' + (a.tailTopics || []).length + ' 个长尾标签') + '</span>' +
+      '</div>';
+
+    return head + (tab === 'concepts' ? viewConcepts(a) : topicsBody(a));
+  }
+
+  function topicsBody(a) {
     const core = a.coreTopics || a.topics.filter((t) => t.name !== '未归类' && t.count >= 2);
     const tail = a.tailTopics || a.topics.filter((t) => t.name !== '未归类' && t.count === 1);
     const untagged = a.topics.filter((t) => t.name === '未归类')[0];
@@ -984,7 +1010,189 @@
       '</div></div>';
   }
 
-  /* ---------------- 视图：标签管理 ---------------- */
+  /* ---------------- 视图：关键概念 ---------------- */
+  function viewConcepts(a) {
+    const all = a.concepts || [];
+    if (!all.length) {
+      return '<div class="card reveal"><div class="empty">' +
+        '<b>还没有可提取的概念</b><p>等资料解析出正文后，这里会自动列出关键概念与核心词汇</p>' +
+        '<button class="btn btn-sm btn-ghost" data-act="view" data-v="library" style="margin-top:12px">去资料库看看</button></div></div>';
+    }
+    const filter = state.conceptFilter === 'core' ? 'core' : state.conceptFilter === 'support' ? 'support' : 'all';
+    const list = filter === 'all' ? all : all.filter(function (c) { return c.band === filter; });
+    const coreN = all.filter(function (c) { return c.band === 'core'; }).length;
+    const hits = all.reduce(function (s, c) { return s + c.hits; }, 0);
+    const docSet = {};
+    all.forEach(function (c) { c.docs.forEach(function (id) { docSet[id] = 1; }); });
+    const maxTotal = Math.max.apply(null, all.map(function (c) { return c.total; }).concat([1]));
+
+    const statHtml = function (v, label) {
+      return '<div class="stat-inline"><b>' + v + '</b><span>' + label + '</span></div>';
+    };
+
+    const hero = '<div class="card concept-hero reveal">' +
+        '<div class="tag-hero-main">' +
+          '<div class="card-title" style="margin-bottom:6px">关键概念与核心词汇</div>' +
+          '<p class="tag-hero-desc">从标题、标签与正文中抽取：先用学科词表最长匹配命中术语，再用 2—6 字 n-gram 统计高频短语，' +
+            '按 <b>词频 × 区分度（IDF）× 长度权重 × 位置加权</b> 打分，剔除碎片与泛化词后分级。每个概念都保留原文出处，点击即可定位。</p>' +
+        '</div>' +
+        '<div class="kit-row tag-hero-stats">' +
+          statHtml(all.length, '概念总数') + statHtml(coreN, '核心概念') +
+          statHtml(Object.keys(docSet).length, '覆盖资料') + statHtml((a.conceptEdges || []).length, '共现关系') +
+        '</div>' +
+        '<div class="kit-row tag-hero-acts">' +
+          '<button class="btn btn-sm btn-ghost" data-act="concept-rules">判定规则</button>' +
+          '<button class="btn btn-sm btn-primary" data-act="goto-graph" data-mode="concept">在知识图谱中查看</button>' +
+        '</div>' +
+      '</div>';
+
+    const filters = '<div class="seg-row" style="margin:2px 0 12px">' +
+        '<div class="segmented mini" data-seg="cfilter"><span class="seg-ind"></span>' +
+          [['all', '全部 ' + all.length], ['core', '核心 ' + coreN], ['support', '支撑 ' + (all.length - coreN)]].map(function (x) {
+            return '<button data-act="concept-filter" data-f="' + x[0] + '" class="' + (filter === x[0] ? 'active' : '') + '">' + x[1] + '</button>';
+          }).join('') +
+        '</div>' +
+        '<span class="count-label">共出现 ' + hits + ' 次 · 按综合强度排序 · 点击查看判定依据与原文出处</span>' +
+      '</div>';
+
+    return hero + filters +
+      '<div class="card concept-table reveal">' + list.map(function (c, i) { return conceptRow(c, i, maxTotal); }).join('') + '</div>' +
+      '<p class="hint" style="margin-top:10px">概念强度 = (1 + ln 词频) × IDF × 长度权重 × 来源权重 × 位置权重；同一概念在多篇资料中反复出现会累加。</p>';
+  }
+
+  function conceptRow(c, i, maxTotal) {
+    const pct = Math.round((c.total / maxTotal) * 100);
+    const color = c.topic ? tagColor(c.topic) : '#8e8e93';
+    return '<button class="concept-row reveal" data-act="concept" data-term="' + esc(c.term) + '" style="animation-delay:' + Math.min(i * 14, 160) + 'ms">' +
+        '<span class="concept-rank">' + (i + 1) + '</span>' +
+        '<span class="concept-main">' +
+          '<span class="concept-name">' + esc(c.term) +
+            '<em class="cband ' + (c.band === 'core' ? 'core' : '') + '">' + (c.band === 'core' ? '核心' : '支撑') + '</em>' +
+            '<em class="ckind">' + (c.kind === 'term' ? '术语' : '短语') + '</em>' +
+            (c.topic ? '<em class="ctopic"><i class="t-dot" style="background:' + color + '"></i>' + esc(c.topic) + '</em>' : '') +
+          '</span>' +
+          '<span class="concept-sub">' + c.df + ' 篇资料 · 共 ' + c.hits + ' 次 · 强度 ' + c.total + '</span>' +
+          '<span class="concept-bar"><i style="width:' + Math.max(4, pct) + '%;background:' + color + '"></i></span>' +
+          (c.co.length ? '<span class="concept-co">' + c.co.slice(0, 3).map(function (x) {
+            return '<span class="co-chip">' + esc(x.term) + '</span>';
+          }).join('') + '</span>' : '') +
+        '</span>' +
+        '<span class="concept-side">' + (c.co.length ? c.co.length + ' 个关联' : '暂无关联') +
+          '<svg class="chev" viewBox="0 0 24 24" fill="none"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+        '</span>' +
+      '</button>';
+  }
+
+  /* 概念详情：判定依据 + 原文对应 + 关联概念 */
+  function openConcept(term) {
+    const a = ensureAnalysis();
+    const all = a.concepts || [];
+    const c = all.filter(function (x) { return x.term === term; })[0];
+    if (!c) { toast('这个概念已不在当前分析结果中，请重新分析'); return; }
+    const rank = all.indexOf(c) + 1;
+    const docs = c.docs.map(docById).filter(Boolean);
+    const topRow = c.byDoc.slice().sort(function (x, y) { return y.score - x.score; })[0];
+    const detail = topRow && a.insights[topRow.docId]
+      ? (a.insights[topRow.docId].concepts || []).filter(function (x) { return x.term === term; })[0]
+      : null;
+    const color = c.topic ? tagColor(c.topic) : '#8e8e93';
+
+    const ev = [];
+    ev.push(['抽取方式', c.kind === 'term'
+      ? '命中学科词表（最长匹配优先，分值 ×1.9）'
+      : '2—6 字 n-gram 统计，未被更长词组覆盖的候选短语']);
+    ev.push(['出现情况', '全库 ' + c.hits + ' 次，覆盖 ' + c.df + ' 篇资料']);
+    ev.push(['区分度 IDF', c.idf + (c.idf >= 1.2 ? ' · 较独有，集中在少数资料' : ' · 较常见，属基础词汇')]);
+    ev.push(['综合强度', c.total + ' · 全库排名 #' + rank]);
+    if (detail) {
+      const pos = ['×' + detail.posW];
+      if (detail.inTitle) pos.push('命中标题');
+      if (detail.inTags) pos.push('命中标签');
+      if (detail.contexts[0] && detail.contexts[0].at < 200) pos.push('出现在开头');
+      ev.push(['位置加权', pos.join(' · ')]);
+    }
+    ev.push(['分级', c.band === 'core' ? '核心概念（综合强度前 35%）' : '支撑概念（补足上下文与细节）']);
+
+    const contexts = c.contexts.slice(0, 4).map(function (ctx) {
+      const d = docById(ctx.docId);
+      if (!d) return '';
+      return '<button class="ctx" data-act="concept-jump" data-doc="' + d.id + '" data-term="' + esc(term) + '">' +
+          '<span class="ctx-doc">' + esc(shortTitle(d.title)) + '</span>' +
+          '<span class="ctx-text">' + esc(ctx.before) + '<mark>' + esc(term) + '</mark>' + esc(ctx.after) + '</span>' +
+          '<span class="ctx-go">定位原文 ↗</span>' +
+        '</button>';
+    }).join('');
+
+    const body =
+      '<div class="concept-headline">' +
+        '<span class="concept-dot" style="background:' + color + '"></span>' +
+        '<div class="concept-hl-main"><b>' + esc(c.term) + '</b>' +
+          '<span>' + (c.kind === 'term' ? '学科术语' : '高频短语') + ' · ' + (c.band === 'core' ? '核心概念' : '支撑概念') +
+          ' · 强度 ' + c.total + '</span></div>' +
+        '<span class="cband ' + (c.band === 'core' ? 'core' : '') + '">' + (c.band === 'core' ? '核心' : '支撑') + '</span>' +
+      '</div>' +
+
+      '<div class="sheet-section-title">判定依据</div>' +
+      '<div class="evidence">' + ev.map(function (x) {
+        return '<div class="ev-row"><span>' + x[0] + '</span><b>' + esc(x[1]) + '</b></div>';
+      }).join('') + '</div>' +
+
+      '<div class="sheet-section-title">原文对应 · ' + c.df + ' 篇资料</div>' +
+      (contexts || '<p class="hint" style="margin:0">这些资料里没有保留可定位的原文片段</p>') +
+      (c.df > 1 ? '<div class="doc-row-inline">' + docs.slice(0, 6).map(function (d) {
+        return '<button class="doc-pill" data-act="doc" data-id="' + d.id + '">' + esc(shortTitle(d.title)) + '</button>';
+      }).join('') + '</div>' : '') +
+
+      (c.co.length ? '<div class="sheet-section-title">关联概念 · 共现</div>' +
+        '<div class="kw-cloud">' + c.co.map(function (x) {
+          return '<button class="kw co-link" data-act="concept" data-term="' + esc(x.term) + '" title="共现权重 ' + x.w + '">' +
+            esc(x.term) + '<em>' + x.w + '</em></button>';
+        }).join('') + '</div>' +
+        '<p class="hint" style="margin-top:6px">两个概念在同一篇资料里一起出现即建立关联，权重带核心概念加成</p>' : '') +
+
+      (c.topics.length ? '<div class="sheet-section-title">所属主题</div>' +
+        '<div class="kw-cloud">' + c.topics.map(function (t) {
+          return tagChip(t, { act: 'topic', count: tagUsage(t) });
+        }).join('') + '</div>' : '');
+
+    openSheet({
+      eyebrow: '关键概念',
+      title: esc(term),
+      meta: '<span>' + c.df + ' 篇资料</span><span>·</span><span>共 ' + c.hits + ' 次</span><span>·</span><span>强度 ' + c.total + '</span>',
+      body: body,
+      footer: '<button class="btn btn-sm" data-act="concept-rules">判定规则</button>' +
+        '<div class="group">' +
+          '<button class="btn btn-sm" data-act="goto-graph" data-mode="concept" data-term="' + esc(term) + '">在知识图谱中查看</button>' +
+          '<button class="btn btn-sm btn-primary" data-act="close-sheet">完成</button>' +
+        '</div>'
+    });
+  }
+
+  /* 判定规则说明（概念视图与资料详情共用） */
+  function openConceptRules() {
+    openSheet({
+      eyebrow: '概念提取',
+      title: '关键概念是怎么提取的',
+      meta: '<span>纯本地规则</span><span>·</span><span>不调用模型接口</span>',
+      body:
+        '<ol class="rule-steps">' +
+          '<li><b>切分候选</b><span>先用学科词表（经济增长、菲利普斯曲线、IS-LM…）做最长匹配，命中即锁定为术语；对剩余文本切 2—6 字 n-gram，得到短语候选。</span></li>' +
+          '<li><b>过滤噪声</b><span>去掉停用字组合、格式类词（习题 / 笔记 / 讲义）与泛化词（分析 / 影响 / 问题）；若某个词几乎总被更长的词组覆盖，判为碎片并剔除。</span></li>' +
+          '<li><b>四项打分</b><span>综合强度 = (1 + ln 词频) × IDF × 长度权重 × 来源权重（术语 ×1.9），其中 IDF = ln(1 + 资料总数 / 含该词的资料数)。</span></li>' +
+          '<li><b>位置加权</b><span>出现在标题 ×1.16、标签 ×1.10、正文开头（前 20% 或前 200 字）×1.06，最多叠加到 ×1.32。</span></li>' +
+          '<li><b>分级</b><span>按全库综合强度排序，前 35%（至少 3 个）记为核心概念；其余为支撑概念，仍在概念页可查。</span></li>' +
+          '<li><b>对应原文</b><span>每个概念保留最多 4 处上下文（前 26 字 + 概念 + 后 34 字），点击即可跳到原文并高亮该词。</span></li>' +
+        '</ol>' +
+        '<div class="evidence" style="margin-top:14px">' +
+          '<div class="ev-row"><span>为什么不用分词库</span><b>零依赖：词表 + n-gram + 统计量即可解释每个结果的来源</b></div>' +
+          '<div class="ev-row"><span>与标签的区别</span><b>标签由你定义（主题归属），概念由文本自动提取（内容证据）</b></div>' +
+        '</div>',
+      footer: '<span class="card-sub">概念与知识图谱共用同一份抽取结果</span>' +
+        '<button class="btn btn-sm btn-primary" data-act="close-sheet">知道了</button>'
+    });
+  }
+
+  /* 视图：标签管理 */
   function viewTags() {
     const tree = tagTree();
     const all = tagList();
@@ -1082,7 +1290,7 @@
     if (!state.docs.length) return emptyLibrary();
     const a = ensureAnalysis();
     const tab = state.analysisTab;
-    const tabs = [['summary', '智能总结'], ['gaps', '知识缺口'], ['graph', '内容关联'], ['suggest', '建议方案']];
+    const tabs = [['summary', '智能总结'], ['gaps', '知识缺口'], ['graph', '知识图谱'], ['suggest', '建议方案']];
 
     return '<div class="agent-bar reveal">' +
         '<div class="agent-avatar ' + (running ? 'working' : '') + '">' +
@@ -1115,7 +1323,9 @@
   function tabHint(tab, a) {
     if (tab === 'summary') return a.docCount + ' 篇 · 按重要度排序';
     if (tab === 'gaps') return a.gaps.length + ' 项待补强';
-    if (tab === 'graph') return a.edges.length + ' 条关联';
+    if (tab === 'graph') return state.graphMode === 'doc'
+      ? a.edges.length + ' 条资料关联'
+      : (a.conceptEdges || []).length + ' 条概念共现';
     return a.suggestions.length + ' 条可采纳建议';
   }
 
@@ -1134,7 +1344,8 @@
         '</div>' +
         '<p class="sum-tldr">' + esc(ins.tldr) + '</p>' +
         '<ul class="points">' + ins.points.slice(0, 3).map((p) => '<li>' + esc(p) + '</li>').join('') + '</ul>' +
-        '<div class="kw-cloud">' + ins.keywords.slice(0, 5).map((k) => '<span class="kw">' + esc(k) + '</span>').join('') + '</div>' +
+        '<div class="kw-cloud">' + ins.keywords.slice(0, 5).map((k) =>
+          '<button class="kw" data-act="concept" data-term="' + esc(k) + '" title="查看概念详情">' + esc(k) + '</button>').join('') + '</div>' +
         '<div class="sum-foot"><span class="card-sub">' + ins.charCount + ' 字 · 更新于 ' + fmtDate(d.updatedAt) + '</span>' +
           '<button class="adopt-btn" data-act="doc" data-id="' + d.id + '" data-original="1">回溯原文</button></div>' +
       '</div>';
@@ -1161,7 +1372,138 @@
       '</div>').join('') + '</div></div>';
   }
 
+  /* ---------------- 知识图谱 ---------------- */
   function analysisGraph(a) {
+    const mode = state.graphMode === 'doc' ? 'doc' : 'concept';
+    const coreN = (a.concepts || []).filter(function (c) { return c.band === 'core'; }).length;
+    const bar = '<div class="graph-bar reveal">' +
+        '<div class="segmented mini" data-seg="graphMode"><span class="seg-ind"></span>' +
+          '<button data-act="graph-mode" data-mode="concept" class="' + (mode === 'concept' ? 'active' : '') + '">概念图谱</button>' +
+          '<button data-act="graph-mode" data-mode="doc" class="' + (mode === 'doc' ? 'active' : '') + '">资料图谱</button>' +
+        '</div>' +
+        '<span class="graph-hint">' + (mode === 'concept'
+          ? '节点 = 概念，连线 = 同一篇资料中共现'
+          : '节点 = 资料，连线 = 共享概念或主题') + '</span>' +
+        '<div class="kit-row">' +
+          (mode === 'concept'
+            ? '<button class="btn btn-sm btn-ghost" data-act="graph-core">' + (state.graphCoreOnly ? '显示全部概念' : '只看核心 ' + coreN + ' 个') + '</button>'
+            : '') +
+          '<button class="btn btn-sm btn-ghost" data-act="graph-relayout">重新布局</button>' +
+        '</div>' +
+      '</div>';
+    return bar + (mode === 'doc' ? docGraph(a) : conceptGraph(a));
+  }
+
+  /* 概念图谱：节点=概念，边=共现，颜色=主标签，大小=综合强度 */
+  function conceptGraph(a) {
+    const narrow = window.innerWidth < 720;
+    const W = narrow ? 430 : 760, H = narrow ? 560 : 470;
+    let pool = (a.concepts || []).filter(function (c) {
+      return state.graphCoreOnly ? c.band === 'core' : (c.band === 'core' || c.df >= 2);
+    }).slice(0, narrow ? 18 : 30);
+    /* 资料少时上面会筛得过狠，退回按强度取前若干个 */
+    if (pool.length < 6 && !state.graphCoreOnly) pool = (a.concepts || []).slice(0, narrow ? 10 : 14);
+
+    if (pool.length < 2) {
+      return '<div class="card reveal"><div class="empty"><b>概念太少，画不出图谱</b>' +
+        '<p>至少需要 2 个概念。多导入几篇同主题的资料，或关闭「只看核心概念」</p></div></div>';
+    }
+
+    const terms = {};
+    pool.forEach(function (c) { terms[c.term] = 1; });
+    let edges = (a.conceptEdges || []).filter(function (e) { return terms[e.a] && terms[e.b]; });
+    /* 每个节点最多保留 3 条最强边，避免毛线球 */
+    const byNode = {};
+    edges.forEach(function (e) {
+      (byNode[e.a] = byNode[e.a] || []).push(e);
+      (byNode[e.b] = byNode[e.b] || []).push(e);
+    });
+    const keep = [];
+    Object.keys(byNode).forEach(function (k) {
+      byNode[k].sort(function (x, y) { return y.w - x.w; }).slice(0, 3).forEach(function (e) { keep.push(e); });
+    });
+    edges = keep.filter(function (e, i) { return keep.indexOf(e) === i; });
+
+    const maxTotal = Math.max.apply(null, pool.map(function (c) { return c.total; }).concat([1]));
+    const nodes = pool.map(function (c) {
+      return {
+        id: c.term,
+        label: Engine.trimTo(c.term, narrow ? 6 : 8),
+        importance: c.total,
+        r: clamp(9 + (c.total / maxTotal) * 13, 9, narrow ? 19 : 24),
+        color: c.topic ? tagColor(c.topic) : '#8e8e93',
+        kind: 'concept',
+        tip: c.term + ' · ' + c.df + ' 篇 · ' + c.hits + ' 次',
+        focus: state.graphFocus === c.term
+      };
+    });
+    layoutGraph(nodes, edges, W, H);
+
+    const byId = {};
+    nodes.forEach(function (n) { byId[n.id] = n; });
+    const maxW = Math.max.apply(null, edges.map(function (e) { return e.w; }).concat([1]));
+
+    const edgeSvg = edges.map(function (e) {
+      const s = byId[e.a], t = byId[e.b];
+      if (!s || !t) return '';
+      const w = clamp(0.8 + (e.w / maxW) * 2.4, 0.8, 3.4);
+      return '<line class="gedge" data-a="' + esc(e.a) + '" data-b="' + esc(e.b) + '" x1="' + s.x.toFixed(1) + '" y1="' + s.y.toFixed(1) +
+        '" x2="' + t.x.toFixed(1) + '" y2="' + t.y.toFixed(1) + '" stroke="#8a8a92" stroke-opacity="' +
+        clamp(0.16 + (e.w / maxW) * 0.4, 0.16, 0.55).toFixed(2) + '" stroke-width="' + w.toFixed(1) + '" stroke-linecap="round"/>';
+    }).join('');
+
+    const nodeSvg = nodes.map(function (n) {
+      return '<g class="gnode' + (n.focus ? ' focus' : '') + '" data-id="' + esc(n.id) + '" data-kind="concept" data-label="' + esc(n.tip) + '"' +
+        ' transform="translate(' + n.x.toFixed(1) + ',' + n.y.toFixed(1) + ')">' +
+        (n.focus ? '<circle class="halo" r="' + (n.r + 7).toFixed(1) + '" fill="none" stroke="' + n.color + '" stroke-width="2" stroke-opacity=".45"/>' : '') +
+        '<circle r="' + n.r.toFixed(1) + '" fill="' + n.color + '" fill-opacity=".92" stroke="#fff" stroke-width="2.5"/>' +
+        '<text class="' + (n.showLabel ? 'show' : '') + '" x="' + (n.lx - n.x).toFixed(1) + '" y="' + (n.ly - n.y).toFixed(1) +
+        '" text-anchor="middle">' + esc(n.label) + '</text>' +
+      '</g>';
+    }).join('');
+
+    const degree = {};
+    edges.forEach(function (e) {
+      degree[e.a] = (degree[e.a] || 0) + e.w;
+      degree[e.b] = (degree[e.b] || 0) + e.w;
+    });
+    const hubs = nodes.slice().sort(function (x, y) { return (degree[y.id] || 0) - (degree[x.id] || 0); }).slice(0, 3);
+    const pairs = edges.slice().sort(function (x, y) { return y.w - x.w; }).slice(0, 3);
+
+    return '<div class="graph-wrap reveal">' +
+        '<svg viewBox="0 0 ' + W + ' ' + H + '" id="graphSvg">' +
+          '<g>' + edgeSvg + '</g><g>' + nodeSvg + '</g>' +
+        '</svg>' +
+        '<div class="graph-tip" id="graphTip"></div>' +
+        '<div class="graph-legend">' +
+          '<span><i style="background:#0a84ff"></i>节点大小 = 综合强度</span>' +
+          '<span><i style="background:#8a8a92"></i>连线 = 同篇共现（越粗越强）</span>' +
+          '<span><i style="background:#5856d6"></i>节点颜色 = 所属主标签</span>' +
+          '<span><i style="background:#ff9500"></i>点击节点查看判定依据</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="grid" style="grid-template-columns:repeat(2,1fr);margin-top:14px">' +
+        '<div class="card"><div class="card-title" style="margin-bottom:10px">最强共现关系</div>' +
+          (pairs.length ? pairs.map(function (e) {
+            return '<div class="rel" data-act="concept" data-term="' + esc(e.a) + '">' +
+              '<span class="rel-ico" style="background:' + (byId[e.a] || {}).color + '">↔</span>' +
+              '<span class="rel-t">' + esc(e.a) + ' ↔ ' + esc(e.b) + '</span>' +
+              '<span class="rel-w">权重 ' + e.w + '</span></div>';
+          }).join('') : '<p class="hint" style="margin:0">还没有共现关系，多导入几篇同主题资料</p>') +
+        '</div>' +
+        '<div class="card"><div class="card-title" style="margin-bottom:10px">枢纽概念</div>' +
+          hubs.map(function (n) {
+            const c = (a.concepts || []).filter(function (x) { return x.term === n.id; })[0] || {};
+            return '<div class="rel" data-act="concept" data-term="' + esc(n.id) + '">' +
+              '<span class="rel-ico" style="background:' + n.color + '">◎</span>' +
+              '<span class="rel-t">' + esc(n.id) + '</span>' +
+              '<span class="rel-w">' + (c.df || 0) + ' 篇 · 连接 ' + Math.round(degree[n.id] || 0) + '</span></div>';
+          }).join('') +
+        '</div>' +
+      '</div>';
+  }
+
+  function docGraph(a) {
     const narrow = window.innerWidth < 720;
     const W = narrow ? 430 : 760, H = narrow ? 560 : 430;
     const nodes = state.docs.map((d) => ({
@@ -1187,7 +1529,8 @@
     }).join('');
 
     const nodeSvg = nodes.map((n) =>
-      '<g class="gnode" data-id="' + n.id + '" transform="translate(' + n.x.toFixed(1) + ',' + n.y.toFixed(1) + ')">' +
+      '<g class="gnode" data-id="' + n.id + '" data-kind="doc" data-label="' + esc(n.full || n.label) + '"' +
+        ' transform="translate(' + n.x.toFixed(1) + ',' + n.y.toFixed(1) + ')">' +
         '<circle r="' + n.r.toFixed(1) + '" fill="' + n.color + '" fill-opacity=".92" stroke="#fff" stroke-width="2.5"/>' +
         '<text class="' + (n.showLabel ? 'show' : '') + '" x="' + (n.lx - n.x).toFixed(1) + '" y="' + (n.ly - n.y).toFixed(1) +
         '" text-anchor="middle">' + esc(n.label) + '</text>' +
@@ -1200,12 +1543,13 @@
         '<div class="graph-tip" id="graphTip"></div>' +
         '<div class="graph-legend">' +
           '<span><i style="background:#0a84ff"></i>节点大小 = 重要度</span>' +
-          '<span><i style="background:#8a8a92"></i>连线 = 共享关键词</span>' +
+          '<span><i style="background:#8a8a92"></i>连线 = 共享概念或主题</span>' +
           '<span><i style="background:#5856d6"></i>节点颜色 = 主标签</span>' +
         '</div>' +
       '</div>' +
       '<div class="grid" style="grid-template-columns:repeat(2,1fr);margin-top:14px">' +
         '<div class="card"><div class="card-title" style="margin-bottom:10px">关联最紧密的资料对</div>' +
+          (a.edges.length ? '' : '<p class="hint" style="margin:0">还没有资料对共享概念，导入同一主题的多篇资料后这里会建立连线</p>') +
           a.edges.slice().sort((x, y) => y.weight - x.weight).slice(0, 3).map((e) => {
             const s = docById(e.source), t = docById(e.target);
             if (!s || !t) return '';
@@ -1227,8 +1571,9 @@
 
   function layoutGraph(nodes, edges, W, H) {
     const pad = 68;
+    const seed = state.graphSeed || 0;
     nodes.forEach((n, i) => {
-      const ang = i * 2.399963229;
+      const ang = i * 2.399963229 + seed * 0.83;
       const rad = Math.sqrt((i + 0.6) / nodes.length) * Math.min(W, H) * 0.46;
       n.x = W / 2 + Math.cos(ang) * rad * 1.18;
       n.y = H / 2 + Math.sin(ang) * rad * 0.92;
@@ -1237,6 +1582,10 @@
     });
     const idx = {};
     nodes.forEach((n, i) => { idx[n.id] = i; });
+    /* 小图收紧一点：斥力更弱、向心力更强，避免几个节点被推到画布边缘 */
+    const compact = nodes.length <= 14;
+    const repK = compact ? 10000 : 14000;
+    const pullK = compact ? 0.0052 : 0.0028;
 
     for (let it = 0; it < 520; it++) {
       for (let i = 0; i < nodes.length; i++) {
@@ -1246,7 +1595,7 @@
           let d2 = dx * dx + dy * dy;
           if (d2 < 1) { d2 = 1; dx = Math.random() - 0.5; dy = Math.random() - 0.5; }
           const d = Math.sqrt(d2);
-          const rep = 14000 / d2;
+          const rep = repK / d2;
           const ux = dx / d, uy = dy / d;
           a.vx -= ux * rep; a.vy -= uy * rep;
           b.vx += ux * rep; b.vy += uy * rep;
@@ -1257,14 +1606,14 @@
         if (!a || !b) return;
         const dx = b.x - a.x, dy = b.y - a.y;
         const d = Math.sqrt(dx * dx + dy * dy) || 1;
-        const target = 104 + 46 / (1 + e.weight * 0.25);
+        const target = (compact ? 92 : 104) + 46 / (1 + e.weight * 0.25);
         const f = (d - target) * 0.022;
         a.vx += (dx / d) * f; a.vy += (dy / d) * f;
         b.vx -= (dx / d) * f; b.vy -= (dy / d) * f;
       });
       nodes.forEach((n) => {
-        n.vx += (W / 2 - n.x) * 0.0028;
-        n.vy += (H / 2 - n.y) * 0.0028;
+        n.vx += (W / 2 - n.x) * pullK;
+        n.vy += (H / 2 - n.y) * pullK;
         n.vx *= 0.86; n.vy *= 0.86;
         n.x += n.vx; n.y += n.vy;
         n.x = Math.max(pad, Math.min(W - pad, n.x));
@@ -1419,7 +1768,9 @@
       ? '共 ' + state.docs.length + ' 篇 · ' + mains + ' 个主标签 · ' + (tagList().length - mains) + ' 个次标签'
       : (state.view === 'tags'
         ? mains + ' 个主标签 · ' + (tagList().length - mains) + ' 个次标签 · 颜色与文件夹统一管理'
-        : v.sub);
+        : (state.view === 'topics' && state.topicsTab === 'concepts'
+          ? '从正文自动抽取的关键概念与核心词汇 · 可回溯原文'
+          : v.sub));
     $('#content').innerHTML = v.render();
     updateChrome();
     afterRender();
@@ -1513,7 +1864,8 @@
 
     nodes.forEach((g) => {
       const id = g.getAttribute('data-id');
-      const d = docById(id);
+      const kind = g.getAttribute('data-kind') || 'doc';
+      const tipText = g.getAttribute('data-label') || ((docById(id) || {}).title || id);
       g.addEventListener('mouseenter', function (e) {
         const rel = {};
         edges.forEach((line) => {
@@ -1524,9 +1876,9 @@
           const nid = n.getAttribute('data-id');
           if (nid !== id && !rel[nid]) n.classList.add('dim');
         });
-        if (tip && d) {
+        if (tip) {
           const r = wrap.getBoundingClientRect();
-          tip.textContent = d.title;
+          tip.textContent = tipText;
           tip.style.left = (e.clientX - r.left) + 'px';
           tip.style.top = (e.clientY - r.top) + 'px';
           tip.classList.add('on');
@@ -1539,7 +1891,9 @@
         tip.style.top = (e.clientY - r.top) + 'px';
       });
       g.addEventListener('mouseleave', clear);
-      g.addEventListener('click', function () { openDoc(id); });
+      g.addEventListener('click', function () {
+        if (kind === 'concept') openConcept(id); else openDoc(id);
+      });
     });
     edges.forEach((e) => e.setAttribute('data-op', e.getAttribute('stroke-opacity')));
   }
@@ -1620,6 +1974,24 @@
 
   /* ---------------- 资料详情：标签选择器 ---------------- */
   let pickerApi = null;
+  let sheetDocId = null;
+
+  /* 在原文区域里定位并高亮某个概念 */
+  function jumpToTerm(term) {
+    const root = $('#sheetRoot');
+    const el = $('#originalText', root);
+    if (!el) return false;
+    const target = String(term || '').toLowerCase();
+    const marks = Array.prototype.slice.call(el.querySelectorAll('mark'));
+    const hit = marks.filter(function (m) {
+      return String(m.getAttribute('data-term') || m.textContent || '').toLowerCase() === target;
+    })[0];
+    if (!hit) { toast('原文里没有找到「' + term + '」'); return false; }
+    hit.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    hit.classList.add('flash');
+    setTimeout(function () { hit.classList.remove('flash'); }, 1800);
+    return true;
+  }
 
   function docTagChipsHtml(d) {
     if (!d || !d.tags || !d.tags.length) return '<span class="muted" style="font-size:12px">还没有标签</span>';
@@ -1832,10 +2204,20 @@
             (d.pages ? ' · ' + d.pages + ' 页' : '') +
             (d.extractedAt ? ' · 导入时已解析' : '') + '</div>');
 
-    const keywordHtml = ins.keywords.length
-      ? '<div class="sheet-section-title">关键词</div>' +
-        '<div class="kw-cloud">' + ins.keywords.map((k) => '<span class="kw hot">' + esc(k) + '</span>').join('') + '</div>'
-      : '';
+    const concepts = ins.concepts || [];
+    const keywordHtml = concepts.length
+      ? '<div class="sheet-section-title" style="justify-content:space-between;gap:10px">关键概念' +
+          '<button class="link-btn" data-act="concept-rules">判定规则</button></div>' +
+        '<div class="kw-cloud concept-chips">' + concepts.map(function (c, i) {
+          return '<button class="kw concept-chip' + (i === 0 ? ' hot' : '') + '" data-act="concept-jump" data-doc="' + d.id +
+            '" data-term="' + esc(c.term) + '" title="出现 ' + c.freq + ' 次 · 强度 ' + c.score + ' · 点击定位原文">' +
+            esc(c.term) + '<em>' + c.freq + '</em></button>';
+        }).join('') + '</div>' +
+        '<div class="hint">点概念可跳到原文；点「判定规则」看它为什么被选中</div>'
+      : (ins.keywords.length
+        ? '<div class="sheet-section-title">关键词</div>' +
+          '<div class="kw-cloud">' + ins.keywords.map((k) => '<span class="kw hot">' + esc(k) + '</span>').join('') + '</div>'
+        : '');
 
     const tagHtml =
       '<div class="sheet-section-title" style="justify-content:space-between;gap:10px">标签' +
@@ -1874,7 +2256,6 @@
       '<div class="sheet-section-title">原始文档</div>' +
       '<div class="original" id="originalText">' +
         (d.content ? Engine.highlight(d.content, ins.keywords) : '（暂无正文）') + '</div>';
-
     const body =
       '<div class="kv">' +
         '<div><span>类型</span><b>' + meta.label + ' · ' + fmtSize(d.size) + '</b></div>' +
@@ -1884,6 +2265,7 @@
       '</div>' +
       summaryHtml + keywordHtml + tagHtml;
 
+    sheetDocId = d.id;
     openSheet({
       eyebrow: '资料详情',
       title: esc(d.title),
@@ -1904,6 +2286,10 @@
         if (opts.original) {
           const el = $('#originalText', root);
           if (el) setTimeout(() => el.scrollIntoView({ block: 'center', behavior: 'smooth' }), 240);
+        }
+        /* 从概念详情跳进来：定位到该术语并高亮 */
+        if (opts.focusTerm) {
+          setTimeout(function () { jumpToTerm(opts.focusTerm); }, 420);
         }
         /* 老资料首次打开时自动补解析一次，省得逐篇点按钮 */
         if (canExtract && missingText && !d.extractTried) {
@@ -2635,6 +3021,9 @@
       md += '### ' + d.title + '\n\n';
       md += '> ' + ins.tldr + '\n\n';
       md += '关键词：' + ins.keywords.join('、') + '\n\n';
+      if (ins.concepts && ins.concepts.length) {
+        md += '概念（强度）：' + ins.concepts.map(function (c) { return c.term + '(' + c.score + ')'; }).join('、') + '\n\n';
+      }
       ins.points.forEach((p, i) => { md += (i + 1) + '. ' + p + '\n'; });
       md += '\n';
     });
@@ -2679,7 +3068,36 @@
       case 'backup': backupOne(btn.getAttribute('data-id')); break;
       case 'backup-all': backupAll(); break;
       case 'run-analysis': runAnalysis(); break;
-      case 'tab': state.analysisTab = btn.getAttribute('data-tab'); save(); render(); break;
+      case 'tab': state.analysisTab = btn.getAttribute('data-tab'); state.graphFocus = null; save(); render(); break;
+      case 'topics-tab': state.topicsTab = btn.getAttribute('data-tab') === 'concepts' ? 'concepts' : 'topics'; save(); render(); break;
+      case 'concept-filter': state.conceptFilter = btn.getAttribute('data-f') || 'all'; save(); render(); break;
+      case 'concept': openConcept(btn.getAttribute('data-term')); break;
+      case 'concept-jump': {
+        const cdoc = btn.getAttribute('data-doc');
+        const cterm = btn.getAttribute('data-term');
+        if (cdoc && sheetDocId === cdoc && $('#originalText')) jumpToTerm(cterm);
+        else if (cdoc) openDoc(cdoc, { focusTerm: cterm, original: true });
+        break;
+      }
+      case 'concept-rules': openConceptRules(); break;
+      case 'graph-mode': state.graphMode = btn.getAttribute('data-mode') === 'doc' ? 'doc' : 'concept';
+        state.graphFocus = null; save(); render(); break;
+      case 'graph-core': state.graphCoreOnly = !state.graphCoreOnly; save(); render(); break;
+      case 'graph-relayout': state.graphSeed = (state.graphSeed || 0) + 1; save(); render(); break;
+      case 'goto-graph': {
+        state.view = 'analysis';
+        state.analysisTab = 'graph';
+        state.graphMode = btn.getAttribute('data-mode') === 'doc' ? 'doc' : 'concept';
+        state.graphFocus = btn.getAttribute('data-term') || null;
+        closeSheet();
+        $('#scrollArea').scrollTop = 0;
+        save(); render();
+        setTimeout(function () {
+          const g = $('#graphSvg');
+          if (g) g.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }, 300);
+        break;
+      }
       case 'sort': state.sort = btn.getAttribute('data-sort'); save(); render(); break;
       case 'library-mode': state.libraryMode = btn.getAttribute('data-mode') === 'list' ? 'list' : 'folder'; save(); render(); break;
       case 'folder-rule': state.folderRule = btn.getAttribute('data-rule') === 'primary' ? 'primary' : 'all'; save(); render(); break;

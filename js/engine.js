@@ -111,7 +111,7 @@ window.Engine = (function () {
       const idf = Math.log(1 + N / (df[term] || 1));
       const lenW = [0, 1, 1, 1.14, 1.26, 1.32, 1.36][term.length] || 1.4;
       const score = (1 + Math.log(freq)) * idf * lenW * (isLex ? 1.9 : 1);
-      cands.push({ term: term, score: score, freq: freq, lex: isLex });
+      cands.push({ term: term, score: score, freq: freq, lex: isLex, idf: idf, lenW: lenW });
     });
 
     cands.sort((a, b) => b.score - a.score || b.term.length - a.term.length);
@@ -166,6 +166,53 @@ window.Engine = (function () {
   const daysSince = (iso) => (iso ? (Date.now() - new Date(iso).getTime()) / 86400000 : 999);
   const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 
+  /* ---------------- 概念：把关键词升级为带证据的条目 ---------------- */
+
+  /* 原文片段：用于「概念 ↔ 原文」的对应关系，点击可定位高亮 */
+  function contextsOf(term, content, max) {
+    const out = [];
+    const text = String(content || '');
+    if (!text) return out;
+    let from = 0;
+    while (out.length < max) {
+      const i = text.indexOf(term, from);
+      if (i < 0) break;
+      const s = Math.max(0, i - 26);
+      out.push({
+        at: i,
+        before: (s > 0 ? '…' : '') + text.slice(s, i).replace(/\s+/g, ' ').trim(),
+        after: text.slice(i + term.length, i + term.length + 34).replace(/\s+/g, ' ').trim()
+      });
+      from = i + term.length;
+    }
+    return out;
+  }
+
+  /* 判定依据：词表命中（术语）/ n-gram 统计（短语）、词频、IDF、长度、位置 */
+  function buildDocConcepts(d, kws, charLen) {
+    return kws.map(function (k, i) {
+      const ctx = contextsOf(k.term, d.content, 2);
+      const inTitle = d.title.indexOf(k.term) >= 0;
+      const inTags = (d.tags || []).some(function (t) { return t.indexOf(k.term) >= 0; });
+      const early = ctx.length ? ctx[0].at < Math.max(90, Math.min(220, charLen * 0.2)) : false;
+      const posW = 1 + (inTitle ? 0.16 : 0) + (inTags ? 0.1 : 0) + (early ? 0.06 : 0);
+      return {
+        term: k.term,
+        kind: k.lex ? 'term' : 'phrase',
+        freq: k.freq,
+        idf: Math.round(k.idf * 100) / 100,
+        lenW: k.lenW,
+        posW: Math.round(posW * 100) / 100,
+        score: Math.round(k.score * posW * 10) / 10,
+        rank: i + 1,
+        inTitle: inTitle,
+        inTags: inTags,
+        occurrences: ctx.length,
+        contexts: ctx
+      };
+    });
+  }
+
   /* ---------------- 主分析 ---------------- */
   function analyze(docs, tags) {
     const N = Math.max(1, docs.length);
@@ -216,6 +263,14 @@ window.Engine = (function () {
       ins.points = [];
       ins.theme = (d.tags && d.tags[0]) || '待补全';
       ins.tldr = '尚未提取到可分析的正文，暂时无法生成摘要。';
+    });
+
+    /* 1.5) 概念：关键词 + 判定依据 + 原文片段；每篇前 3 个记为核心概念 */
+    docs.forEach(function (d) {
+      const ins = insights[d.id];
+      if (ins.needsText) { ins.concepts = []; return; }
+      ins.concepts = buildDocConcepts(d, ins.keywordScores, ins.charCount);
+      ins.concepts.forEach(function (c, i) { c.band = i < 3 ? 'core' : 'support'; });
     });
 
     /* 2) 关联：共享关键词 + 同主题 */
@@ -280,6 +335,98 @@ window.Engine = (function () {
 
     const coreTopics = topics.filter((t) => t.name !== '未归类' && t.count >= 2);
     const tailTopics = topics.filter((t) => t.name !== '未归类' && t.count === 1);
+
+    /* 4.5) 概念索引：跨资料的聚合 + 共现关系（知识图谱的节点与边） */
+    const tagById = Object.create(null);
+    (tags || []).forEach(function (t) { tagById[t.id] = t; });
+    const mainOf = Object.create(null);
+    (tags || []).forEach(function (t) {
+      mainOf[t.name] = (t.parentId && tagById[t.parentId]) ? tagById[t.parentId].name : t.name;
+    });
+    function mainTagOf(d) {
+      const names = d.tags || [];
+      for (let i = 0; i < names.length; i++) {
+        if (mainOf[names[i]]) return mainOf[names[i]];
+      }
+      return '';
+    }
+
+    const conceptMap = Object.create(null);
+    docs.forEach(function (d) {
+      const topic = mainTagOf(d);
+      (insights[d.id].concepts || []).forEach(function (c) {
+        let g = conceptMap[c.term];
+        if (!g) {
+          g = conceptMap[c.term] = {
+            term: c.term, kind: c.kind, docs: [], byDoc: [], hits: 0, total: 0, idf: c.idf,
+            topics: Object.create(null), co: Object.create(null), contexts: []
+          };
+        }
+        g.docs.push(d.id);
+        g.hits += c.freq;
+        g.total += c.score;
+        g.byDoc.push({ docId: d.id, freq: c.freq, score: c.score, band: c.band });
+        if (c.kind === 'term') g.kind = 'term';
+        if (topic) g.topics[topic] = (g.topics[topic] || 0) + 1;
+        if (g.contexts.length < 4 && c.contexts[0]) {
+          g.contexts.push({ docId: d.id, before: c.contexts[0].before, after: c.contexts[0].after });
+        }
+      });
+    });
+
+    /* 共现：同一篇资料内一起出现 → 相关边；两个都是核心概念再加权 */
+    docs.forEach(function (d) {
+      const cs = (insights[d.id].concepts || []).slice(0, 8);
+      for (let i = 0; i < cs.length; i++) {
+        for (let j = i + 1; j < cs.length; j++) {
+          const A = conceptMap[cs[i].term], B = conceptMap[cs[j].term];
+          if (!A || !B) continue;
+          const w = Math.min(cs[i].freq, cs[j].freq) +
+            (cs[i].band === 'core' ? 0.5 : 0) + (cs[j].band === 'core' ? 0.5 : 0);
+          A.co[B.term] = (A.co[B.term] || 0) + w;
+          B.co[A.term] = (B.co[A.term] || 0) + w;
+        }
+      }
+    });
+
+    const conceptAll = Object.keys(conceptMap).map(function (term) {
+      const g = conceptMap[term];
+      const topicList = Object.keys(g.topics).sort(function (x, y) { return g.topics[y] - g.topics[x]; });
+      const co = Object.keys(g.co).map(function (t) { return { term: t, w: Math.round(g.co[t] * 10) / 10 }; })
+        .sort(function (x, y) { return y.w - x.w; }).slice(0, 6);
+      return {
+        term: term,
+        kind: g.kind,
+        df: g.docs.length,
+        hits: g.hits,
+        total: Math.round(g.total * 10) / 10,
+        weight: Math.round((g.total / Math.max(1, g.docs.length)) * 10) / 10,
+        idf: g.idf,
+        docs: g.docs,
+        byDoc: g.byDoc,
+        co: co,
+        contexts: g.contexts,
+        topic: topicList[0] || '',
+        topics: topicList.slice(0, 3)
+      };
+    }).sort(function (x, y) { return y.total - x.total || y.df - x.df || x.term.localeCompare(y.term, 'zh-Hans-CN'); });
+
+    const coreCut = Math.max(3, Math.round(conceptAll.length * 0.35));
+    const concepts = conceptAll.slice(0, 80);
+    concepts.forEach(function (c, i) { c.band = i < coreCut ? 'core' : 'support'; });
+
+    const conceptEdges = [];
+    const pairSeen = Object.create(null);
+    concepts.forEach(function (c) {
+      c.co.slice(0, 4).forEach(function (x) {
+        if (!conceptMap[x.term]) return;
+        const key = [c.term, x.term].sort().join('|');
+        if (pairSeen[key]) return;
+        pairSeen[key] = 1;
+        conceptEdges.push({ a: c.term, b: x.term, w: x.w });
+      });
+    });
+    conceptEdges.sort(function (x, y) { return y.w - x.w; });
 
     /* 5) 全库关键词：由各篇关键词汇总，避免碎片 */
     const kwCount = Object.create(null);
@@ -481,6 +628,8 @@ window.Engine = (function () {
       coreTopics: coreTopics,
       tailTopics: tailTopics,
       keywords: globalKw,
+      concepts: concepts,
+      conceptEdges: conceptEdges,
       gaps: gaps,
       suggestions: suggestions,
       stats: {
@@ -491,7 +640,10 @@ window.Engine = (function () {
         tagCount: coreTopics.length + tailTopics.length,
         coreCount: coreTopics.length,
         tailCount: tailTopics.length,
-        untagged: untagged.length
+        untagged: untagged.length,
+        conceptCount: concepts.length,
+        coreConceptCount: concepts.filter(function (c) { return c.band === 'core'; }).length,
+        conceptEdgeCount: conceptEdges.length
       }
     };
   }

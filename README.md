@@ -5,7 +5,19 @@
 零依赖 · 零构建 · 无后端 · 不上传任何数据。
 
 **线上地址**：https://whoaru-1.github.io/study-desk/
-**本地地址**：http://127.0.0.1:4173 （`npm start`）
+**本地地址**：http://127.0.0.1:4173
+
+## 启动方式
+
+| 方式 | 操作 | 特点 |
+| --- | --- | --- |
+| **开机自启（推荐）** | 双击 `install-autostart.command` | 注册为 macOS LaunchAgent：登录后自动启动、崩溃自动重启，常驻后台不占窗口。取消用 `uninstall-autostart.command` |
+| 手动启动 | 双击 `start.command` | 弹出终端窗口并打开页面，关掉窗口服务即停 |
+| 命令行 | `npm start` | 同上，适合开发调试 |
+
+> 服务进程必须常驻，页面才能打开。如果 Safari 报「无法连接服务器」，说明进程不在了——双击 `start.command` 或重跑自启脚本即可。
+> 日志：`~/Library/Logs/studydesk.log` 与 `studydesk.err.log`。
+
 
 ![tech](https://img.shields.io/badge/stack-HTML%20%2B%20CSS%20%2B%20Vanilla%20JS-5856d6)
 ![deps](https://img.shields.io/badge/dependencies-0-2fbf5c)

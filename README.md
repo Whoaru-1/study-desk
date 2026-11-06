@@ -218,7 +218,11 @@ plugin/
 3. **文件先落盘、元信息后入库**：localStorage 只存在浏览器里，服务端无法直接写资料条目。因此上传只负责「复制 + 进队列」，工作台打开后用 `/api/wb/inbox` 读到队列，再由前端调用 `addDoc` + `/api/extract` 生成资料与摘要，最后 `ack` 清队列。
 4. **中间产物过滤**：`.p1.pdf`、`.tmp2.pdf`、隐藏文件被标为 `transient`，默认不显示，避免把导出中间态收进资料库。
 
-> 启用 MCP：`~/.workbuddy/mcp.json` 已写入 `workbuddy-workbench`，在连接器页面的自定义连接器里点「信任」后生效；路径变化时改 `args` 即可。
+> 启用 MCP：`~/.workbuddy/mcp.json` 已写入 `workbuddy-workbench`。**自定义 MCP 只在会话启动时读取**，写入后需要新开一个对话（或重启 WorkBuddy）才会出现 `wb_*` 工具；当前会话看不到属正常现象。
+>
+> 不依赖 MCP 的等价通路：本地服务一直在跑时，直接 `curl http://127.0.0.1:4173/api/wb/list` / `POST /api/wb/upload` 即可，行为与 MCP 工具完全一致（技能 `send-to-workbench` 已内置两条通路）。
+>
+> 路径变化时改 `args` 即可。
 
 ### 备份
 备份进度环、逐条 / 全部备份、自动备份开关、备份状态分布、完整 JSON 存档导出。

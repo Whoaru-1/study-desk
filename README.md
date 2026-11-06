@@ -155,6 +155,71 @@ state.tags = [{
 | 知识图谱 | 概念图谱 / 资料图谱双模式力导向图，节点大小、颜色与连线含义见上节；悬停高亮邻居，点击打开详情 |
 | 建议方案 | 复习计划 / 整理方案 / 学习路径 / 补强建议，每条含**依据、适用场景、优先级、执行步骤**，可一键采纳 |
 
+### WorkBuddy 集成（插件）
+
+把 WorkBuddy 本次会话产出的文件批量收进资料库。三个入口、同一套逻辑：
+
+| 入口 | 触发方式 | 适合 |
+| --- | --- | --- |
+| 工作台 UI | 顶栏 **WorkBuddy** 按钮（仅本地模式显示） | 手动挑文件、看进度与结果 |
+| 待入库队列 | 同一面板「待入库」页签，按钮上的红点提示 | Agent 已经上传、等你确认入库 |
+| WorkBuddy 对话 | 说「把这个传到工作台」，Agent 调用 MCP 工具 | 不想切窗口，直接对话完成 |
+
+**面板交互**：范围（今天 / 7 天 / 全部）、类型（资料文档 / 全部类型）、「中间产物」「包含重复」开关；每行显示类型徽章、文件名、大小、时间，以及「已在资料库 / 待入库 / 源文件缺失」状态；底部实时显示已选数量与合计大小，支持全选、导入、取消。
+
+**约束**
+
+| 项 | 规则 |
+| --- | --- |
+| 类型 | pdf / docx / pptx / md / markdown / txt / csv / json / html / ipynb；代码、图片、压缩包不支持 |
+| 大小 | 单文件 ≤ 200MB（超过直接标为不可导入） |
+| 批量 | 单次 ≤ 30 个 |
+| 路径 | 只读取产出索引里、且位于 Downloads / Desktop / Documents / WorkBuddy 之下的文件；只复制，不移动 |
+| 并发 | 单任务串行复制，逐条更新状态；失败不中断其余文件 |
+
+**重复与失败**
+
+- **内容级去重**：按 SHA-256 比对仓库已有文件（先按大小筛，再算哈希），命中默认跳过并标注「资料库中已有相同内容」；勾选「包含重复」可强制导入副本（自动加 `(2)`）
+- **同名不同内容**：允许导入，落盘时重命名为 `name (2).ext`，原文件名保留在资料条目上
+- **批次内重复**：同一批选了两个内容相同的文件，第二个自动跳过
+- **幂等**：已在待入库队列里的文件再次上传，返回「已在待入库队列中」而不是重复复制
+- **失败原因可读**：源文件已移动 / 无读取权限 / 磁盘空间不足 / 超过上限 / 写入失败，逐条显示且可「重试失败项」
+
+**接口约定（仅 127.0.0.1）**
+
+```http
+GET  /api/wb/health                        能力、索引位置、允许目录、限制、待入库数
+GET  /api/wb/list?hours=168&limit=200      产出文件（含 supported / duplicate / inInbox / transient）
+POST /api/wb/upload  {ids:[], includeDuplicates}  → {jobId, accepted, rejected}
+GET  /api/wb/job?id=                        进度：items[{id,name,status,reason,rel}]
+POST /api/wb/job/cancel {id}                取消未开始条目
+GET  /api/wb/inbox                          待入库队列
+POST /api/wb/inbox/ack {ids:[]}             前端写入 localStorage 后确认
+```
+
+MCP 工具与之一一对应：`wb_outputs_list` / `wb_outputs_upload` / `wb_inbox` / `wb_health`。
+
+**模块结构**
+
+```
+plugin/
+├── wb-outputs.js   # 读 ~/.workbuddy/artifact-index，规范化为 {id,name,path,size,type,...}，做路径/大小/类型校验
+├── vault.js        # 内容哈希去重、唯一命名、复制入仓、待入库队列读写
+├── jobs.js         # 上传任务：单并发、逐条状态机、取消、失败隔离
+├── index.js        # HTTP 路由 /api/wb/*（由 server.js 挂载）
+├── mcp-server.js   # stdio MCP，4 个工具，与 HTTP 共用上面三个模块
+└── manifest.json   # 插件元信息、权限、限制
+```
+
+**关键实现点**
+
+1. **数据源**：WorkBuddy 把产出登记在 `~/.workbuddy/artifact-index/<sessionId>.json`，每条带 `uri`、`size`、`updatedAt`；同一路径以最新时间为准。
+2. **两条通路共用一个核心**：HTTP 面板与 MCP 工具调同样的 `list / create / run`，行为一致，不会出现「网页能传、对话不能传」。
+3. **文件先落盘、元信息后入库**：localStorage 只存在浏览器里，服务端无法直接写资料条目。因此上传只负责「复制 + 进队列」，工作台打开后用 `/api/wb/inbox` 读到队列，再由前端调用 `addDoc` + `/api/extract` 生成资料与摘要，最后 `ack` 清队列。
+4. **中间产物过滤**：`.p1.pdf`、`.tmp2.pdf`、隐藏文件被标为 `transient`，默认不显示，避免把导出中间态收进资料库。
+
+> 启用 MCP：`~/.workbuddy/mcp.json` 已写入 `workbuddy-workbench`，在连接器页面的自定义连接器里点「信任」后生效；路径变化时改 `args` 即可。
+
 ### 备份
 备份进度环、逐条 / 全部备份、自动备份开关、备份状态分布、完整 JSON 存档导出。
 
@@ -255,6 +320,13 @@ macOS 也可以直接双击 `start.command`。
 ├── server.js                  # 零依赖本地静态服务器 + 本机能力 API
 ├── lib/
 │   └── extract.js             # 正文提取：PDF（PDFKit）/ DOCX / PPTX（zip）/ 纯文本
+├── plugin/                    # WorkBuddy 集成插件（HTTP + MCP）
+│   ├── wb-outputs.js          # 读取产出索引并做类型/大小/路径校验
+│   ├── vault.js               # 去重、复制入仓、待入库队列
+│   ├── jobs.js                # 上传任务与进度
+│   ├── index.js               # /api/wb/* 路由
+│   ├── mcp-server.js          # stdio MCP（4 个工具）
+│   └── manifest.json          # 插件元信息与权限
 ├── start.command              # macOS 双击启动
 ├── .github/workflows/deploy.yml
 └── package.json

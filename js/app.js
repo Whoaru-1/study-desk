@@ -157,6 +157,9 @@
     const h = await apiHealth();
     state.localMode = !!h;
     state.vault = h && h.vault ? h.vault : '';
+    const wbBtn = $('#wbImportBtn');
+    if (wbBtn) wbBtn.hidden = !(h && h.canWorkBuddy);
+    if (h && h.canWorkBuddy) refreshWbBadge();
     updateChrome();
   }
 
@@ -1826,19 +1829,24 @@
     }
   }
 
-  function afterRender() {
-    requestAnimationFrame(() => {
-      $$('.bar-fill[data-w]').forEach((el) => {
-        el.style.width = el.getAttribute('data-w') + '%';
-      });
-    });
-    $$('.segmented').forEach((seg) => {
+  /* 分段控件的滑动胶囊：主视图与面板共用 */
+  function syncSegmented(scope) {
+    $$('.segmented', scope || document).forEach(function (seg) {
       const active = seg.querySelector('button.active');
       const ind = seg.querySelector('.seg-ind');
       if (!active || !ind) return;
       ind.style.width = active.offsetWidth + 'px';
       ind.style.transform = 'translateX(' + (active.offsetLeft - 3) + 'px)';
     });
+  }
+
+  function afterRender() {
+    requestAnimationFrame(() => {
+      $$('.bar-fill[data-w]').forEach((el) => {
+        el.style.width = el.getAttribute('data-w') + '%';
+      });
+    });
+    syncSegmented();
     bindGraph();
     // 逐项入场的轻微错峰
     $$('.reveal').forEach((el, i) => {
@@ -2361,6 +2369,437 @@
         });
       }
     });
+  }
+
+  /* ---------------- WorkBuddy 集成：从产出文件导入 ---------------- */
+  const wb = {
+    tab: 'outputs', hours: 168, typeGroup: 'doc', showTransient: false, includeDuplicates: false,
+    items: [], loading: false, error: '', meta: null, sel: {},
+    job: null, poll: null, result: null,
+    inbox: [], inboxLoading: false
+  };
+  const WB_DOC_EXT = ['pdf', 'docx', 'pptx', 'md', 'markdown', 'txt', 'csv', 'html', 'htm'];
+
+  function wbColor(type) {
+    return (window.TYPE_META[type] || window.TYPE_META.note || {}).color || '#8e8e93';
+  }
+  function wbShort(type) {
+    return (window.TYPE_META[type] || window.TYPE_META.note || {}).short || 'TXT';
+  }
+  function wbTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    const hm = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+    if (sameDay) return '今天 ' + hm;
+    const y = new Date(now.getTime() - 86400000);
+    if (d.toDateString() === y.toDateString()) return '昨天 ' + hm;
+    return (d.getMonth() + 1) + '-' + d.getDate() + ' ' + hm;
+  }
+
+  function wbVisible() {
+    const docOnly = wb.typeGroup === 'doc';
+    return wb.items.filter(function (it) {
+      if (!it.exists) return false;
+      if (it.transient && !wb.showTransient) return false;
+      if (docOnly && WB_DOC_EXT.indexOf(it.ext) < 0) return false;
+      return true;
+    });
+  }
+
+  function wbSelectable(it) {
+    return it.supported && it.exists && (!it.duplicate || wb.includeDuplicates);
+  }
+
+  function wbJobItem(id) {
+    if (!wb.job || !wb.job.items) return null;
+    return wb.job.items.filter(function (x) { return x.id === id; })[0] || null;
+  }
+
+  function wbStateText(it) {
+    if (wb.job) {
+      const j = wbJobItem(it.id);
+      if (!j) return '';
+      if (j.status === 'pending') return '<span class="wb-st">等待</span>';
+      if (j.status === 'copying') return '<span class="wb-st busy"><i></i>复制中</span>';
+      if (j.status === 'done') return '<span class="wb-st ok">✓ 已导入</span>';
+      if (j.status === 'skipped') return '<span class="wb-st">跳过 · ' + esc(j.reason || '重复') + '</span>';
+      if (j.status === 'failed') return '<span class="wb-st err">失败 · ' + esc(j.reason || '未知错误') + '</span>';
+    }
+    return '';
+  }
+
+  function wbBadgeText(it) {
+    if (!it.exists) return '<em class="wb-badge err">源文件缺失</em>';
+    if (!it.supported) return '<em class="wb-badge">' + esc(it.reason || '不支持') + '</em>';
+    if (it.duplicate) return '<em class="wb-badge warn">已在资料库</em>';
+    if (it.inInbox) return '<em class="wb-badge">待入库</em>';
+    return '';
+  }
+
+  function wbRowHtml(it) {
+    const on = !!wb.sel[it.id];
+    const off = !wbSelectable(it);
+    const badge = wbBadgeText(it);
+    const icoText = it.supported ? wbShort(it.type) : String(it.ext || 'file').toUpperCase().slice(0, 4);
+    const icoColor = it.supported ? wbColor(it.type) : '#b4b4ba';
+    return '<label class="wb-row' + (off ? ' is-off' : '') + (on ? ' is-on' : '') + '" data-row="' + it.id + '">' +
+        '<input type="checkbox" data-wb-id="' + it.id + '"' + (on ? ' checked' : '') + (off || wb.job ? ' disabled' : '') + '>' +
+        '<span class="wb-ico" style="background:' + icoColor + '">' + esc(icoText) + '</span>' +
+        '<span class="wb-main">' +
+          '<b>' + esc(it.name) + '</b>' +
+          '<span class="wb-meta">' + fmtSize(it.size) + ' · ' + wbTime(it.updatedAt) + (it.transient ? ' · 中间产物' : '') + '</span>' +
+          (badge || '') +
+        '</span>' +
+        '<span class="wb-state">' + wbStateText(it) + '</span>' +
+      '</label>';
+  }
+
+  function wbInboxRow(it) {
+    return '<div class="wb-row">' +
+        '<span class="wb-ico" style="background:' + wbColor(it.type) + '">' + esc(wbShort(it.type)) + '</span>' +
+        '<span class="wb-main">' +
+          '<b>' + esc(it.name) + '</b>' +
+          '<span class="wb-meta">' + fmtSize(it.size) + ' · 来自 WorkBuddy · ' + wbTime(new Date(it.at).getTime()) + '</span>' +
+        '</span>' +
+        '<span class="wb-state"><span class="wb-st">待入库</span></span>' +
+      '</div>';
+  }
+
+  function wbPanelHtml() {
+    return '<div class="seg-row" style="margin-bottom:12px">' +
+        '<div class="segmented mini" data-seg="wbTab"><span class="seg-ind"></span>' +
+          '<button data-act="wb-tab" data-tab="outputs" class="' + (wb.tab === 'outputs' ? 'active' : '') + '">产出文件</button>' +
+          '<button data-act="wb-tab" data-tab="inbox" class="' + (wb.tab === 'inbox' ? 'active' : '') + '">待入库' +
+            (wb.inbox.length ? ' ' + wb.inbox.length : '') + '</button>' +
+        '</div>' +
+        '<span class="count-label" id="wbCount"></span>' +
+      '</div>' +
+      (wb.tab === 'outputs' ? wbToolbarHtml() : '') +
+      '<div class="wb-list" id="wbList"></div>' +
+      '<p class="hint" id="wbNote" style="margin-top:10px"></p>';
+  }
+
+  function wbToolbarHtml() {
+    const range = [['24', '今天'], ['168', '7 天'], ['8760', '全部']];
+    const type = [['doc', '资料文档'], ['all', '全部类型']];
+    return '<div class="wb-toolbar">' +
+        '<span class="wb-lb">范围</span>' +
+        '<div class="segmented mini" data-seg="wbRange"><span class="seg-ind"></span>' +
+          range.map(function (x) {
+            return '<button data-act="wb-range" data-h="' + x[0] + '" class="' + (String(wb.hours) === x[0] ? 'active' : '') + '">' + x[1] + '</button>';
+          }).join('') +
+        '</div>' +
+        '<span class="wb-lb">类型</span>' +
+        '<div class="segmented mini" data-seg="wbType"><span class="seg-ind"></span>' +
+          type.map(function (x) {
+            return '<button data-act="wb-type" data-g="' + x[0] + '" class="' + (wb.typeGroup === x[0] ? 'active' : '') + '">' + x[1] + '</button>';
+          }).join('') +
+        '</div>' +
+        '<button class="wb-chip' + (wb.showTransient ? ' on' : '') + '" data-act="wb-toggle" data-k="transient">中间产物</button>' +
+        '<button class="wb-chip' + (wb.includeDuplicates ? ' on' : '') + '" data-act="wb-toggle" data-k="dup">包含重复</button>' +
+      '</div>';
+  }
+
+  function wbPaint() {
+    const list = $('#wbList');
+    if (!list) return;
+
+    if (wb.tab === 'inbox') {
+      list.innerHTML = wb.inbox.length
+        ? wb.inbox.map(wbInboxRow).join('')
+        : '<div class="empty" style="padding:36px 16px"><b>待入库队列是空的</b><p>Agent 通过 WorkBuddy 上传的文件会先到这里，等你确认后再写进资料库</p></div>';
+    } else if (wb.loading) {
+      list.innerHTML = '<div class="empty" style="padding:36px 16px"><b>正在读取产出文件…</b><p>扫描 ~/.workbuddy/artifact-index</p></div>';
+    } else if (wb.error) {
+      list.innerHTML = '<div class="empty" style="padding:36px 16px"><b>读取失败</b><p>' + esc(wb.error) + '</p></div>';
+    } else {
+      const vis = wbVisible();
+      list.innerHTML = vis.length
+        ? vis.map(wbRowHtml).join('')
+        : '<div class="empty" style="padding:36px 16px"><b>' + (wb.items.length ? '当前筛选下没有文件' : '还没有 WorkBuddy 产出') + '</b>' +
+          '<p>' + (wb.items.length ? '换个范围，或打开「全部类型 / 中间产物」' : '用 WorkBuddy 生成文档后再回来看看') + '</p></div>';
+    }
+
+    const count = $('#wbCount');
+    if (count) {
+      count.textContent = wb.tab === 'inbox'
+        ? wb.inbox.length + ' 个文件等待确认'
+        : (wb.meta ? '共 ' + wb.meta.total + ' 个产出 · ' + wb.meta.duplicates + ' 个已在资料库' : '');
+    }
+
+    const note = $('#wbNote');
+    if (note) {
+      if (wb.tab === 'inbox') {
+        note.textContent = '入库后会自动提取正文并生成摘要；文件已在资料文件夹中，可随时在访达中打开。';
+      } else if (wb.meta && wb.meta.missing) {
+        note.textContent = '另有 ' + wb.meta.missing + ' 个产出文件已被移动或删除，未列出。仅复制，不移动原文件。';
+      } else {
+        note.textContent = '文件只从 WorkBuddy 复制一份到资料文件夹，原文件保留在原位。';
+      }
+    }
+
+    const sum = $('#wbSum');
+    const acts = $('#wbActions');
+    if (!sum || !acts) return;
+
+    if (wb.tab === 'inbox') {
+      sum.textContent = wb.inbox.length ? '共 ' + wb.inbox.length + ' 个文件待入库' : '';
+      acts.innerHTML = '<button class="btn btn-sm" data-act="close-sheet">关闭</button>' +
+        (wb.inbox.length ? '<button class="btn btn-sm btn-primary" data-act="wb-inbox-ingest">全部入库</button>' : '');
+      return;
+    }
+
+    if (wb.job && wb.job.running) {
+      sum.innerHTML = '正在导入 <b>' + wb.job.done + ' / ' + wb.job.total + '</b>';
+      acts.innerHTML = '<button class="btn btn-sm" data-act="wb-cancel">取消</button>';
+      return;
+    }
+    if (wb.result) {
+      sum.innerHTML = '成功 <b>' + wb.result.ok + '</b>' + (wb.result.skipped ? ' · 跳过 ' + wb.result.skipped : '') +
+        (wb.result.failed ? ' · 失败 ' + wb.result.failed : '');
+      acts.innerHTML = (wb.result.failed ? '<button class="btn btn-sm" data-act="wb-retry">重试失败项</button>' : '') +
+        '<button class="btn btn-sm btn-primary" data-act="close-sheet">完成</button>';
+      return;
+    }
+
+    const ids = Object.keys(wb.sel).filter(function (k) { return wb.sel[k]; });
+    let bytes = 0;
+    ids.forEach(function (id) {
+      const it = wb.items.filter(function (x) { return x.id === id; })[0];
+      if (it) bytes += it.size;
+    });
+    sum.innerHTML = ids.length
+      ? '已选 <b>' + ids.length + '</b> 个 · ' + fmtSize(bytes)
+      : '选择要导入的文件';
+    acts.innerHTML = '<button class="btn btn-sm" data-act="close-sheet">取消</button>' +
+      '<button class="btn btn-sm" data-act="wb-select-all">全选</button>' +
+      '<button class="btn btn-sm btn-primary" data-act="wb-upload"' + (ids.length ? '' : ' disabled') + '>导入并归档</button>';
+  }
+
+  function wbRenderBody() {
+    const body = $('.sheet-body');
+    if (!body) return;
+    body.innerHTML = wbPanelHtml();
+    syncSegmented(body);
+    wbPaint();
+  }
+
+  async function loadWbList() {
+    if (!wb.error && wb.loading) return;
+    wb.loading = true;
+    wbPaint();
+    try {
+      const r = await fetch('/api/wb/list?hours=' + wb.hours + '&limit=200', { cache: 'no-store' });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || '读取失败');
+      wb.items = d.items || [];
+      wb.meta = { total: d.total, missing: d.missing, duplicates: d.duplicates };
+      wb.error = '';
+    } catch (e) {
+      wb.error = e.message;
+      wb.items = [];
+    }
+    wb.loading = false;
+    wbPaint();
+  }
+
+  async function loadWbInbox() {
+    try {
+      const r = await fetch('/api/wb/inbox', { cache: 'no-store' });
+      const d = await r.json();
+      wb.inbox = (d && d.items) || [];
+    } catch (e) {
+      wb.inbox = [];
+    }
+  }
+
+  async function refreshWbBadge() {
+    if (!state.localMode) return;
+    await loadWbInbox();
+    const btn = $('#wbImportBtn');
+    if (btn) btn.classList.toggle('has-dot', wb.inbox.length > 0);
+  }
+
+  function openWbImport(tab) {
+    if (!state.localMode) {
+      toast('需要在本地运行（npm start）才能读取 WorkBuddy 产出');
+      return;
+    }
+    wb.tab = tab === 'inbox' ? 'inbox' : 'outputs';
+    wb.sel = {};
+    wb.job = null;
+    wb.result = null;
+    openSheet({
+      eyebrow: 'WorkBuddy 集成',
+      title: '从 WorkBuddy 导入',
+      meta: '<span>读取产出索引</span><span>·</span><span>复制到资料文件夹，不移动原文件</span>',
+      body: wbPanelHtml(),
+      footer: '<span class="wb-sum" id="wbSum"></span><div class="group" id="wbActions"></div>'
+    }, {
+      mount: function (root) {
+        syncSegmented(root);
+        wbPaint();
+      }
+    });
+    loadWbInbox().then(function () {
+      wbRenderBody();
+      if (!wb.items.length || wb.tab === 'outputs') loadWbList();
+    });
+  }
+
+  /* 把仓库里的文件登记成资料：提取正文 → addDoc */
+  async function ingestVaultItems(items) {
+    let done = 0, pending = 0;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const name = it.name || it.rel || '未命名';
+      const type = it.type || 'note';
+      let content = '';
+      let needsText = true;
+      let pages = 0;
+      let extractedAt = null;
+      const ex = await apiExtract(it.rel);
+      if (ex && ex.ok && ex.text) {
+        content = ex.text.slice(0, 20000);
+        needsText = false;
+        pages = ex.pages || 0;
+        extractedAt = new Date().toISOString();
+        done += 1;
+      } else {
+        pending += 1;
+      }
+      addDoc({
+        title: String(name).replace(/\.[^.]+$/, ''),
+        type: type,
+        content: content,
+        size: it.size || 0,
+        tags: [],
+        fileRel: it.rel,
+        fileName: name,
+        pages: pages,
+        needsText: needsText,
+        extractedAt: extractedAt
+      });
+    }
+    save();
+    render();
+    return { done: done, pending: pending };
+  }
+
+  async function startWbUpload() {
+    const ids = Object.keys(wb.sel).filter(function (k) { return wb.sel[k]; });
+    if (!ids.length) { toast('先选择要导入的文件'); return; }
+    wb.result = null;
+    wb.job = {
+      id: '', running: true, total: ids.length, done: 0, ok: 0, skipped: 0, failed: 0,
+      items: ids.map(function (id) { return { id: id, status: 'pending' }; })
+    };
+    wbPaint();
+    try {
+      const r = await fetch('/api/wb/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: ids, includeDuplicates: wb.includeDuplicates })
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || '提交失败');
+      wb.job.id = d.jobId;
+      wb.job.total = d.accepted;
+      pollWbJob();
+    } catch (e) {
+      wb.job = null;
+      wb.error = e.message;
+      wbPaint();
+      toast('导入失败：' + e.message);
+    }
+  }
+
+  function pollWbJob() {
+    clearTimeout(wb.poll);
+    wb.poll = setTimeout(async function () {
+      if (!wb.job || !wb.job.id) return;
+      try {
+        const r = await fetch('/api/wb/job?id=' + encodeURIComponent(wb.job.id), { cache: 'no-store' });
+        const d = await r.json();
+        if (!d.ok) throw new Error(d.error || '任务不存在');
+        wb.job = d.job;
+        if (wb.job.running) {
+          wbPaint();
+          pollWbJob();
+          return;
+        }
+        await finishWbJob(d.job);
+      } catch (e) {
+        wb.job = null;
+        wb.error = e.message;
+        wbPaint();
+      }
+    }, 320);
+  }
+
+  async function finishWbJob(job) {
+    const doneItems = job.items.filter(function (x) { return x.status === 'done'; });
+    let ingested = { done: 0, pending: 0 };
+    if (doneItems.length) {
+      toast('正在解析 ' + doneItems.length + ' 个文件…');
+      ingested = await ingestVaultItems(doneItems.map(function (x) {
+        return { id: x.id, rel: x.rel, name: x.name, size: x.size, type: x.type };
+      }));
+      try {
+        await fetch('/api/wb/inbox/ack', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: doneItems.map(function (x) { return x.id; }) })
+        });
+      } catch (e) { /* 下次打开会以「待入库」再次提示 */ }
+      wb.inbox = wb.inbox.filter(function (x) {
+        return !doneItems.some(function (d) { return d.id === x.id; });
+      });
+    }
+    wb.result = {
+      ok: job.ok, skipped: job.skipped, failed: job.failed,
+      ingested: ingested.done, pending: ingested.pending
+    };
+    wb.sel = {};
+    wb.job = Object.assign({}, job, { running: false });
+    wbPaint();
+    refreshWbBadge();
+    toast('已导入 ' + job.ok + ' 个文件' + (job.skipped ? ' · 跳过 ' + job.skipped : '') +
+      (job.failed ? ' · 失败 ' + job.failed : ''), 'check');
+  }
+
+  async function cancelWbJob() {
+    if (!wb.job || !wb.job.id) return;
+    try {
+      await fetch('/api/wb/job/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: wb.job.id })
+      });
+      toast('已取消剩余文件');
+    } catch (e) { toast('取消失败：' + e.message); }
+  }
+
+  async function ingestWbInbox() {
+    if (!wb.inbox.length) return;
+    const items = wb.inbox.slice();
+    const res = await ingestVaultItems(items.map(function (x) {
+      return { id: x.id, rel: x.rel, name: x.name, size: x.size, type: x.type };
+    }));
+    try {
+      await fetch('/api/wb/inbox/ack', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: items.map(function (x) { return x.id; }) })
+      });
+    } catch (e) { /* 稍后可重试 */ }
+    wb.inbox = [];
+    wb.tab = 'outputs';
+    wbRenderBody();
+    refreshWbBadge();
+    toast('已入库 ' + res.done + ' 个文件' + (res.pending ? ' · ' + res.pending + ' 个待提取正文' : ''), 'check');
   }
 
   function confirmSheet(title, desc, okText) {
@@ -3186,6 +3625,41 @@
         save(); render(); break;
       }
       case 'import-open': openImport(); break;
+      case 'wb-open': openWbImport(btn.getAttribute('data-tab')); break;
+      case 'wb-tab': wb.tab = btn.getAttribute('data-tab') === 'inbox' ? 'inbox' : 'outputs'; wbRenderBody(); break;
+      case 'wb-range': wb.hours = Number(btn.getAttribute('data-h')) || 168; wbRenderBody(); loadWbList(); break;
+      case 'wb-type': wb.typeGroup = btn.getAttribute('data-g') === 'all' ? 'all' : 'doc'; wbRenderBody(); break;
+      case 'wb-toggle': {
+        if (btn.getAttribute('data-k') === 'dup') {
+          wb.includeDuplicates = !wb.includeDuplicates;
+          if (!wb.includeDuplicates) {
+            wb.items.forEach(function (it) { if (it.duplicate) wb.sel[it.id] = false; });
+          }
+        } else {
+          wb.showTransient = !wb.showTransient;
+        }
+        wbRenderBody();
+        break;
+      }
+      case 'wb-select-all': {
+        const vis = wbVisible().filter(wbSelectable);
+        const allOn = vis.length && vis.every(function (it) { return wb.sel[it.id]; });
+        vis.forEach(function (it) { wb.sel[it.id] = !allOn; });
+        wbPaint();
+        break;
+      }
+      case 'wb-upload': startWbUpload(); break;
+      case 'wb-cancel': cancelWbJob(); break;
+      case 'wb-retry': {
+        if (!wb.job) break;
+        wb.sel = {};
+        wb.job.items.forEach(function (x) { if (x.status === 'failed') wb.sel[x.id] = true; });
+        wb.job = null;
+        wb.result = null;
+        wbPaint();
+        break;
+      }
+      case 'wb-inbox-ingest': ingestWbInbox(); break;
       case 'save-import': {
         const title = ($('#impTitle') || {}).value || '';
         const tagsRaw = ($('#impTags') || {}).value || '';
@@ -3259,6 +3733,14 @@
     }
   });
 
+  /* WorkBuddy 面板：复选框选择 */
+  document.addEventListener('change', function (e) {
+    const box = e.target.closest && e.target.closest('[data-wb-id]');
+    if (!box) return;
+    wb.sel[box.getAttribute('data-wb-id')] = box.checked;
+    wbPaint();
+  });
+
   /* 顶部操作 */
   document.addEventListener('DOMContentLoaded', init);
 
@@ -3274,6 +3756,8 @@
     });
 
     $('#importBtn').addEventListener('click', openImport);
+    const wbBtn = $('#wbImportBtn');
+    if (wbBtn) wbBtn.addEventListener('click', function () { openWbImport(); });
     $('#privacySwitch').addEventListener('click', () => {
       state.privacy = !state.privacy;
       save();
@@ -3329,13 +3813,7 @@
       resizeTimer = setTimeout(() => {
         if (state.view === 'analysis' && state.analysisTab === 'graph') render();
       }, 260);
-      $$('.segmented').forEach((seg) => {
-        const active = seg.querySelector('button.active');
-        const ind = seg.querySelector('.seg-ind');
-        if (!active || !ind) return;
-        ind.style.width = active.offsetWidth + 'px';
-        ind.style.transform = 'translateX(' + (active.offsetLeft - 3) + 'px)';
-      });
+      syncSegmented();
     });
   }
 })();

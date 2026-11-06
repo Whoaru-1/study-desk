@@ -24,6 +24,7 @@ const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 const { extract } = require('./lib/extract');
+const createWbPlugin = require('./plugin');
 
 const ROOT = __dirname;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -196,10 +197,22 @@ function systemReveal(abs, mode) {
   });
 }
 
+/* ---------------- WorkBuddy 集成插件 ---------------- */
+
+const wbPlugin = createWbPlugin({
+  vaultDir: VAULT,
+  json: json,
+  readBody: readBody,
+  log: function (msg) { console.log(CYAN + '  ⇪ WorkBuddy' + RESET + ' ' + msg); }
+});
+
 /* ---------------- API 路由 ---------------- */
 
 async function handleApi(req, res, url) {
   if (!isLocalHost(req)) return json(res, 403, { ok: false, error: '仅允许本机访问' });
+
+  /* 插件自己的路由（/api/wb/*） */
+  if (wbPlugin.handle(req, res, url)) return;
 
   /* 探测本地能力 */
   if (url.pathname === '/api/health' && req.method === 'GET') {
@@ -210,6 +223,7 @@ async function handleApi(req, res, url) {
       vault: vaultLabel(),
       canReveal: ['darwin', 'win32', 'linux'].indexOf(process.platform) >= 0,
       canExtract: true,
+      canWorkBuddy: true,
       pdfEngine: process.platform === 'darwin' ? 'pdfkit' : 'fallback',
       dryRun: REVEAL_DRY
     });

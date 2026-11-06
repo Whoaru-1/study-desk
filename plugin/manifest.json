@@ -1,0 +1,38 @@
+{
+  "name": "workbuddy-workbench",
+  "displayName": "WorkBuddy → 学习资料工作台",
+  "version": "1.0.0",
+  "description": "把 WorkBuddy 产出的文件批量导入学习资料工作台：读取产出索引、内容级去重、复制入仓、进入待入库队列，并由工作台确认后自动生成摘要。",
+  "entry": {
+    "http": "index.js",
+    "mcp": "mcp-server.js"
+  },
+  "permissions": {
+    "read": [
+      "~/.workbuddy/artifact-index",
+      "~/Downloads",
+      "~/Desktop",
+      "~/Documents",
+      "~/WorkBuddy"
+    ],
+    "write": ["$STUDYDESK_VAULT（默认 ~/Documents/StudyDesk）"],
+    "network": "none"
+  },
+  "limits": {
+    "maxFileBytes": 209715200,
+    "maxBatch": 30,
+    "maxListItems": 500
+  },
+  "types": ["pdf", "docx", "pptx", "md", "markdown", "txt", "csv", "json", "html", "htm", "ipynb"],
+  "tools": [
+    "wb_outputs_list",
+    "wb_outputs_upload",
+    "wb_inbox",
+    "wb_health"
+  ],
+  "mcp": {
+    "command": "node",
+    "args": ["plugin/mcp-server.js"],
+    "env": { "STUDYDESK_VAULT": "~/Documents/StudyDesk" }
+  }
+}

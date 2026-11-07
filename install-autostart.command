@@ -6,7 +6,7 @@ LABEL="com.studydesk.server"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 SUPPORT="$HOME/Library/Application Support/StudyDesk"
 RUNSH="$SUPPORT/run.sh"
-PROJECT="$(cd "$(dirname "$0")" && pwd)"
+PROJECT="$(cd "$(dirname "$0")" && pwd -P)"
 PORT=4173
 
 echo "=========================================="
